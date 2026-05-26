@@ -1,0 +1,16 @@
+# Music library (large audio files)
+music/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Cache
+~/.automix_cache.json
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
