@@ -17,7 +17,7 @@ from textual.widgets.tree import TreeNode
 from .audio_engine import AudioEngine, State, SAMPLE_RATE
 from .analyzer import SUPPORTED_EXTENSIONS, empty_record
 from .stretcher import make_transition_buffer
-from .transition import plan_transition, TransitionPlan
+from .transition import plan_transition, tempo_compatible, TransitionPlan
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +388,11 @@ class AutoMixApp(App):
 
     def _setup_song_table(self):
         t = self.query_one("#song-list", DataTable)
-        t.add_columns("Filename", "BPM", "Key")
+        # Leading one-glyph gutter: ":)" marks songs tempo-compatible with the
+        # now-playing track (octave-folded). Keep its column key to update cells
+        # in place when the now-playing track changes.
+        col_keys = t.add_columns("Mix", "Filename", "BPM", "Key")
+        self._match_col_key = col_keys[0]
         t.cursor_type = "row"
 
     def _build_tree(self):
@@ -456,8 +460,21 @@ class AutoMixApp(App):
                 rec = self.library.get(full, empty_record())
                 bpm, key = rec["bpm"], rec["key"]
                 bpm_str = f"{bpm:.1f}" if bpm > 0 else "---"
-                table.add_row(entry, bpm_str, key, key=full)
+                table.add_row(self._match_marker(bpm), entry, bpm_str, key, key=full)
                 self._songs_in_view.append(full)
+
+    def _match_marker(self, song_bpm: float) -> str:
+        """':)' when a song's tempo is mixable with the now-playing track
+        (octave-folded), else blank. Blank when nothing is playing."""
+        return ":)" if tempo_compatible(self._now_bpm, song_bpm) else ""
+
+    def _refresh_match_markers(self) -> None:
+        """Recompute the match gutter for every visible song against the current
+        now-playing BPM. Called whenever the now-playing track changes."""
+        table = self.query_one("#song-list", DataTable)
+        for path in self._songs_in_view:
+            bpm = self.library.get(path, empty_record())["bpm"]
+            table.update_cell(path, self._match_col_key, self._match_marker(bpm))
 
     # ------------------------------------------------------------------
     # Song table events
@@ -511,6 +528,7 @@ class AutoMixApp(App):
         self._next_prepared = None
         self._next_plan = None
         self.query_one("#now-playing", NowPlayingPanel).clear()
+        self._refresh_match_markers()
         if self._next_path is not None:
             panel = self.query_one("#next-track", NextTrackPanel)
             panel.set_display_bpm(None)
@@ -748,6 +766,7 @@ class AutoMixApp(App):
         self._now_key = key
         self._now_downbeats = downbeats
         self.query_one("#now-playing", NowPlayingPanel).set_track(path, bpm, key)
+        self._refresh_match_markers()
         self._pending_now_swap = None
 
     def _handle_track_finished(self) -> None:
@@ -779,6 +798,7 @@ class AutoMixApp(App):
         self._input_buf = ""
 
         self.query_one("#now-playing", NowPlayingPanel).clear()
+        self._refresh_match_markers()
         if self._next_path is not None:
             panel = self.query_one("#next-track", NextTrackPanel)
             panel.set_display_bpm(None)
@@ -1032,6 +1052,7 @@ class AutoMixApp(App):
                 self.call_from_thread(
                     lambda: (
                         self.query_one("#now-playing", NowPlayingPanel).set_track(path, bpm, key),
+                        self._refresh_match_markers(),
                         self._status(f"Now playing: {Path(path).name}"),
                     )
                 )

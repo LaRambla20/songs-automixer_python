@@ -35,6 +35,31 @@ from dataclasses import dataclass
 # exact octaves (128<->64) always skip (drift 0).
 MAX_DRIFT_BEATS = 0.25
 
+# How far the octave-folded tempo ratio may sit from 1.0 for two tracks to be
+# considered beat-mixable (the UI "matching" indicator). 0.06 ≈ the classic
+# turntable pitch range a DJ can ride in by hand. Fade-independent, unlike the
+# per-mix skip decision above.
+TEMPO_MATCH_TOLERANCE = 0.06
+
+
+def fold_ratio(r: float) -> tuple:
+    """Octave-fold a tempo ratio to the interpretation closest to 1.0 in log
+    space (capped at one octave each way). Returns (r_eff, relation)."""
+    candidates = {"": r, "half-time": r / 2.0, "double-time": 2.0 * r}
+    relation = min(candidates, key=lambda k: abs(math.log(candidates[k])))
+    return candidates[relation], relation
+
+
+def tempo_compatible(now_bpm: float, song_bpm: float,
+                     tolerance: float = TEMPO_MATCH_TOLERANCE) -> bool:
+    """True if `song_bpm` is beat-mixable with `now_bpm` once octave-folded —
+    i.e. same tempo or a near half-/double-time relationship within `tolerance`.
+    False when either tempo is unknown (<= 0)."""
+    if now_bpm <= 0 or song_bpm <= 0:
+        return False
+    r_eff, _ = fold_ratio(now_bpm / song_bpm)
+    return abs(r_eff - 1.0) <= tolerance
+
 
 @dataclass
 class TransitionPlan:
@@ -56,12 +81,9 @@ def plan_transition(now_bpm: float, next_bpm: float, fade_seconds: float) -> Tra
             drift_beats=0.0, relation="",
         )
 
-    r = now_bpm / next_bpm
     # Octave folding, capped at one octave each way: pick the interpretation
     # whose stretch is closest to 1.0 in log space (symmetric for c and 1/c).
-    candidates = {"": r, "half-time": r / 2.0, "double-time": 2.0 * r}
-    relation = min(candidates, key=lambda k: abs(math.log(candidates[k])))
-    r_eff = candidates[relation]
+    r_eff, relation = fold_ratio(now_bpm / next_bpm)
 
     matched_bpm = next_bpm * r_eff
     drift_beats = (next_bpm / 60.0) * abs(r_eff - 1.0) * fade_seconds

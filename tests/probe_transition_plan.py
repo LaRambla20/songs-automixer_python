@@ -5,7 +5,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from automix.transition import plan_transition, MAX_DRIFT_BEATS
+from automix.transition import (
+    plan_transition, tempo_compatible, MAX_DRIFT_BEATS, TEMPO_MATCH_TOLERANCE,
+)
 
 
 def approx(a, b, tol=1e-6):
@@ -115,6 +117,26 @@ def test_drift_formula_matches_spec():
     print(f"  PASS drift formula matches spec ({p.drift_beats:.3f} beats)")
 
 
+def test_tempo_compatible():
+    # Same tempo, exact octave, and double-time all match.
+    assert tempo_compatible(128.0, 128.0)
+    assert tempo_compatible(128.0, 64.0), "exact half-time should match"
+    assert tempo_compatible(70.0, 140.0), "exact double-time should match"
+    # Within the 6% window (folded): 128 vs 132 (~3%) matches.
+    assert tempo_compatible(128.0, 132.0)
+    # Well outside: 128 vs 150 (~17%) and its octaves do not match.
+    assert not tempo_compatible(128.0, 150.0)
+    # Near-octave just outside tolerance: 128 vs 70 -> folded 128/140=0.914 (~9%).
+    assert not tempo_compatible(128.0, 70.0)
+    # Unknown tempo never matches.
+    assert not tempo_compatible(0.0, 128.0)
+    assert not tempo_compatible(128.0, 0.0)
+    # Just inside the tolerance matches; just outside does not.
+    assert tempo_compatible(128.0, 128.0 / (1.0 + 0.99 * TEMPO_MATCH_TOLERANCE))
+    assert not tempo_compatible(128.0, 128.0 / (1.0 + 1.5 * TEMPO_MATCH_TOLERANCE))
+    print(f"  PASS tempo_compatible: same/octave/within-{TEMPO_MATCH_TOLERANCE:.0%} match, far misses")
+
+
 if __name__ == "__main__":
     assert MAX_DRIFT_BEATS == 0.25
     test_identical_tempos_skip()
@@ -128,4 +150,5 @@ if __name__ == "__main__":
     test_zero_fade_always_skips()
     test_missing_tempo_skips_without_dividing()
     test_drift_formula_matches_spec()
+    test_tempo_compatible()
     print("\nAll transition-plan tests passed.")

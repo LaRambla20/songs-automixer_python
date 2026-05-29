@@ -58,6 +58,7 @@ def build_app():
     app._prep_epoch = 0
     app._input_mode = ""
     app._input_buf = ""
+    app._songs_in_view = []   # _refresh_match_markers iterates this (no-op when empty)
 
     app._now_panel = FakePanel()
     app._next_panel = FakePanel()

@@ -72,6 +72,7 @@ def build_app(plan, cue_snapped=True, now_downbeats=None, next_downbeats=None):
     app._t_restore_start = 0.0
     app._input_mode = ""
     app._input_buf = ""
+    app._songs_in_view = []   # _refresh_match_markers iterates this (no-op when empty)
 
     next_panel = FakeNextPanel(cue_snapped=cue_snapped)
     now_panel = FakeNowPanel()
