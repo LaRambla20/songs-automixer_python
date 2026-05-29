@@ -5,25 +5,52 @@ A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music fo
 ## Requirements
 
 - Python 3.9+
-- `ffmpeg` installed on your system
+- **`ffmpeg`** — audio decoding
+- **`rubberband`** CLI — tempo stretching for transitions. `main.py` checks for it on your `PATH` at startup and refuses to launch without it.
+- On **Linux**, PortAudio is also needed for playback (`sounddevice` bundles it on Windows and macOS).
 
-Install ffmpeg:
+### Install the system dependencies
+
+**Debian / Ubuntu**
 ```bash
-# Debian / Ubuntu
-sudo apt install ffmpeg
+sudo apt install ffmpeg libportaudio2 rubberband-cli
+```
 
-# Fedora
-sudo dnf install ffmpeg
+**Fedora**
+```bash
+sudo dnf install ffmpeg portaudio rubberband
+```
 
-# Arch
-sudo pacman -S ffmpeg
+**Arch**
+```bash
+sudo pacman -S ffmpeg portaudio rubberband
+```
+
+**macOS** (Homebrew)
+```bash
+brew install ffmpeg rubberband
+```
+
+**Windows** (run in Windows Terminal, not `cmd.exe`)
+```powershell
+winget install Gyan.FFmpeg              # sounddevice bundles PortAudio — no separate install needed
+choco install rubberband                # OR download from https://breakfastquay.com/rubberband/ and add it to PATH
 ```
 
 ## Installation
 
 ```bash
+# Linux / macOS
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
+```powershell
+# Windows
+python -m venv .venv; .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+> **WSL note:** `sounddevice` has no audio device under WSL without WSLg (WSL2 + `wsl --update`) or a manual PulseAudio-over-TCP setup. Run natively on Windows or a Linux desktop instead.
 
 ## Usage
 
