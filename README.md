@@ -52,6 +52,21 @@ pip install -r requirements.txt
 
 > **WSL note:** `sounddevice` has no audio device under WSL without WSLg (WSL2 + `wsl --update`) or a manual PulseAudio-over-TCP setup. Run natively on Windows or a Linux desktop instead.
 
+### Troubleshooting: SSL certificate errors during `pip install`
+
+If `pip install` fails with `CERTIFICATE_VERIFY_FAILED` / `unable to get local issuer certificate`, your network (often a corporate proxy or antivirus) is intercepting TLS with a certificate that Python's bundled store doesn't recognise. Two fixes:
+
+- **Use the OS certificate store** (recommended — pip ≥ 23.2, Python ≥ 3.10):
+  ```bash
+  pip config set global.use-feature truststore
+  ```
+  Then re-run the install normally. On Windows this trusts the same certificates as the rest of the system.
+
+- **One-off workaround** — trust PyPI's hosts for a single command:
+  ```bash
+  pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+  ```
+
 ## Usage
 
 ```bash
