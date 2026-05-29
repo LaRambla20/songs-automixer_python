@@ -2,7 +2,7 @@ import os
 import time
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 from rich.markup import escape as _escape
@@ -15,7 +15,7 @@ from textual.widgets import DataTable, Footer, Header, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from .audio_engine import AudioEngine, State, SAMPLE_RATE
-from .analyzer import SUPPORTED_EXTENSIONS
+from .analyzer import SUPPORTED_EXTENSIONS, empty_record
 from .stretcher import make_transition_buffer
 
 
@@ -43,12 +43,19 @@ class NowPlayingPanel(Static):
         self._path: Optional[str] = None
         self._bpm: float = 0.0
         self._key: str = ""
+        # Set by _tick to surface the current transition phase (MIXING vs
+        # tempo-restoration vs idle). Drives the third panel line.
+        self._phase: str = ""
 
     def set_track(self, path: str, bpm: float, key: str):
         self._path = path
         self._bpm = bpm
         self._key = key
+        self._phase = ""
         self.refresh_progress(0, 0)
+
+    def set_phase(self, phase: str) -> None:
+        self._phase = phase
 
     def refresh_progress(self, position: int, duration: int, current_bpm: Optional[float] = None):
         if self._path is None:
@@ -60,13 +67,17 @@ class NowPlayingPanel(Static):
         filled = int(pct * bar_len)
         bar = "#" * filled + "-" * (bar_len - filled)
         bpm = current_bpm if current_bpm is not None else self._bpm
-        self.update(
-            f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}\n"
-            f"  {_fmt_time(position)} / {_fmt_time(duration)}  [{bar}]"
-        )
+        lines = [
+            f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}",
+            f"  {_fmt_time(position)} / {_fmt_time(duration)}  [{bar}]",
+        ]
+        if self._phase:
+            lines.append(f"  {self._phase}")
+        self.update("\n".join(lines))
 
     def clear(self):
         self._path = None
+        self._phase = ""
         self.update("NOW PLAYING: \\[no track loaded]")
 
 
@@ -81,17 +92,39 @@ class NextTrackPanel(Static):
         self._restore: float = 30.0
         self._status: str = ""
         self._display_bpm: Optional[float] = None
+        # Per-track downbeat sample indices (at engine SAMPLE_RATE). When non-empty,
+        # set_cue auto-snaps to the nearest one — this is what gives the mix its
+        # bar alignment.
+        self._downbeats: List[int] = []
+        self._cue_snapped: bool = False
 
-    def set_track(self, path: str, bpm: float, key: str):
+    def set_track(self, path: str, bpm: float, key: str, downbeats: Optional[List[int]] = None):
+        # Cue points are track-specific; carrying the previous track's cue across
+        # an N press would silently bias the new track's snap to whatever bar
+        # happened to be close to the old position. Reset to 0 on every new track
+        # (set_cue then snaps it to the first downbeat if any).
+        path_changed = path != self._path
         self._path = path
         self._bpm = bpm
         self._key = key
         self._display_bpm = None
+        self._downbeats = list(downbeats) if downbeats else []
         self._status = "\\[not prepared]"
-        self._render()
+        if path_changed:
+            self.set_cue(0.0)
+        else:
+            self.set_cue(self._cue)
 
     def set_cue(self, seconds: float):
-        self._cue = max(0.0, seconds)
+        target = max(0.0, seconds)
+        if self._downbeats:
+            target_sample = int(target * SAMPLE_RATE)
+            nearest = min(self._downbeats, key=lambda d: abs(d - target_sample))
+            self._cue = nearest / SAMPLE_RATE
+            self._cue_snapped = True
+        else:
+            self._cue = target
+            self._cue_snapped = False
         self._render()
 
     def set_fade(self, seconds: float):
@@ -115,6 +148,10 @@ class NextTrackPanel(Static):
         return self._cue
 
     @property
+    def cue_snapped(self) -> bool:
+        return self._cue_snapped
+
+    @property
     def fade(self) -> float:
         return self._fade
 
@@ -128,16 +165,19 @@ class NextTrackPanel(Static):
             return
         name = _escape(Path(self._path).name)
         cue_str = _fmt_time(int(self._cue * SAMPLE_RATE))
+        cue_marker = " \\[bar]" if self._cue_snapped else ""
         bpm_show = self._display_bpm if self._display_bpm is not None else self._bpm
         self.update(
             f"NEXT TRACK: {name}  |  {bpm_show:.1f} BPM  {self._key}\n"
-            f"  Cue: {cue_str}  Fade: {self._fade:.0f}s  Restore: {self._restore:.0f}s  {self._status}\n"
+            f"  Cue: {cue_str}{cue_marker}  Fade: {self._fade:.0f}s  Restore: {self._restore:.0f}s  {self._status}\n"
             f"  \\[C] Cue  \\[F] Fade  \\[R] Restore  \\[P] Prepare  \\[M] Mix"
         )
 
     def clear(self):
         self._path = None
         self._display_bpm = None
+        self._downbeats = []
+        self._cue_snapped = False
         self.update("NEXT TRACK: \\[none]")
 
 
@@ -219,7 +259,7 @@ class AutoMixApp(App):
     #now-playing {
         border: solid #00cccc;
         color: #00cccc;
-        height: 4;
+        height: 5;
         padding: 0 1;
     }
     #next-track {
@@ -252,7 +292,7 @@ class AutoMixApp(App):
         Binding("q", "quit", "Quit", show=True),
     ]
 
-    def __init__(self, root_folder: str, library: Dict[str, Tuple[float, str]]):
+    def __init__(self, root_folder: str, library: Dict[str, Dict]):
         super().__init__()
         self.root_folder = root_folder
         self.library = library
@@ -262,12 +302,28 @@ class AutoMixApp(App):
         self._now_path: Optional[str] = None
         self._now_bpm: float = 0.0
         self._now_key: str = ""
+        # Sample indices (at engine SAMPLE_RATE) where downbeats fall in the now-
+        # playing track. Used by action_mix_now to pick a sample-accurate scheduled
+        # crossfade start. Empty list = no alignment data → fall back to immediate mix.
+        self._now_downbeats: List[int] = []
 
         self._next_path: Optional[str] = None
         self._next_bpm: float = 0.0
         self._next_key: str = ""
+        self._next_downbeats: List[int] = []
         self._next_prepared: Optional[np.ndarray] = None
         self._preparing: bool = False
+        # True between Mix-pressed and the scheduled crossfade actually firing;
+        # _tick uses it to update the status line when state flips PLAYING→MIXING.
+        self._mix_scheduled: bool = False
+        # For a deferred (bar-aligned) mix, the now-playing metadata swap is held
+        # here until the crossfade actually fires, so the NowPlaying panel keeps
+        # showing the outgoing track during the bar-wait instead of jumping early.
+        # Tuple of (path, bpm, key, downbeats) or None.
+        self._pending_now_swap: Optional[tuple] = None
+        # Wall-clock timestamp of the previous _tick, used to freeze the
+        # restoration BPM ramp while the engine is paused.
+        self._last_tick_t: float = time.time()
 
         self._songs_in_view: List[str] = []
 
@@ -289,6 +345,12 @@ class AutoMixApp(App):
         self._prep_progress: float = 0.0
         self._prep_from_bpm: float = 0.0
         self._prep_to_bpm: float = 0.0
+        # Bumped whenever the queued next-track changes or a new Prepare starts.
+        # Each prep worker captures the value of this counter at launch time and
+        # checks it on completion; if it has changed (user pressed N or re-pressed
+        # P), the worker silently discards its buffer instead of installing a
+        # stale prep for the now-current track.
+        self._prep_epoch: int = 0
 
     # ------------------------------------------------------------------
     # Compose
@@ -385,7 +447,8 @@ class AutoMixApp(App):
         for entry in entries:
             full = os.path.join(folder, entry)
             if os.path.isfile(full) and Path(entry).suffix.lower() in SUPPORTED_EXTENSIONS:
-                bpm, key = self.library.get(full, (0.0, "?"))
+                rec = self.library.get(full, empty_record())
+                bpm, key = rec["bpm"], rec["key"]
                 bpm_str = f"{bpm:.1f}" if bpm > 0 else "---"
                 table.add_row(entry, bpm_str, key, key=full)
                 self._songs_in_view.append(full)
@@ -395,10 +458,23 @@ class AutoMixApp(App):
     # ------------------------------------------------------------------
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
-        """Enter on a song row -> load as Now Playing."""
+        """Enter on a song row -> load as Now Playing.
+
+        Only allowed when nothing is currently playing (engine IDLE: no track
+        loaded yet, the prior track finished, or user pressed Stop). While a
+        song is playing/paused/mixing/restoring, Enter is rejected with a clear
+        status message — the user must queue with N and mix with M instead.
+        """
         path = self._selected_song()
-        if path:
-            self._do_load_now(path)
+        if not path:
+            return
+        if self.engine.state != State.IDLE:
+            self._status(
+                "Cannot load: a song is already playing. "
+                "Press N to queue this as the next track instead."
+            )
+            return
+        self._do_load_now(path)
 
     # ------------------------------------------------------------------
     # Actions
@@ -410,39 +486,73 @@ class AutoMixApp(App):
     def action_stop(self):
         self.engine.stop()
         self._now_path = None
+        self._now_bpm = 0.0
+        self._now_key = ""
+        self._now_downbeats = []
         self._t_restore_start = 0.0
+        self._restore_from_bpm = 0.0
+        self._restore_to_bpm = 0.0
+        self._mix_scheduled = False
+        self._pending_now_swap = None
+        # Invalidate prep — both any in-flight worker (epoch bump) AND a completed
+        # buffer (which was rendered against the now-stopped track's BPM). Without
+        # clearing _next_prepared, a later Stop→Enter→M would mix a wrong-tempo
+        # buffer. Keep the NEXT track queued but mark it unprepared.
+        self._prep_epoch += 1
+        self._preparing = False
         self._prep_animating = False
         self._prep_progress = 0.0
+        self._next_prepared = None
         self.query_one("#now-playing", NowPlayingPanel).clear()
+        if self._next_path is not None:
+            panel = self.query_one("#next-track", NextTrackPanel)
+            panel.set_display_bpm(None)
+            panel.set_status("\\[not prepared]")
         self._status("")
-
-    def action_seek_back(self):
-        self.engine.seek(-10 * SAMPLE_RATE)
-
-    def action_seek_fwd(self):
-        self.engine.seek(10 * SAMPLE_RATE)
 
     def action_load_next(self):
         path = self._selected_song()
         if not path:
             return
-        bpm, key = self.library.get(path, (0.0, "?"))
+        if path == self._next_path:
+            self._status(f"{Path(path).name} is already queued as NEXT TRACK")
+            return
+        rec = self.library.get(path, empty_record())
+        bpm, key = rec["bpm"], rec["key"]
+        # Bump epoch so any in-flight prep worker for the previous track will
+        # detect it has been superseded and drop its buffer + progress updates.
+        self._prep_epoch += 1
         self._next_path = path
         self._next_bpm = bpm
         self._next_key = key
+        self._next_downbeats = list(rec["downbeats"])
         self._next_prepared = None
+        self._preparing = False
+        self._prep_animating = False
+        self._prep_progress = 0.0
         panel = self.query_one("#next-track", NextTrackPanel)
-        panel.set_track(path, bpm, key)
+        panel.set_display_bpm(None)
+        panel.set_track(path, bpm, key, downbeats=self._next_downbeats)
         self._status(f"Queued as next: {Path(path).name}")
 
     def action_prepare_mix(self):
         if not self._next_path:
             self._status("No next track selected (press N on a song first)")
             return
+        # A prepared buffer's start_rate = now_bpm / next_bpm; with nothing playing
+        # (engine IDLE or _now_bpm == 0) that ratio is 0 and rubberband would render
+        # the fade region frozen. Require a real track playing first.
+        if self.engine.state == State.IDLE or self._now_bpm <= 0:
+            self._status("Load a track first (Enter) before preparing a mix.")
+            return
         if self._preparing:
             self._status("Already preparing...")
             return
         self._preparing = True
+        # Bump and capture the epoch so this worker (and its progress callback)
+        # can detect being superseded by a subsequent N or P press.
+        self._prep_epoch += 1
+        my_epoch = self._prep_epoch
         panel = self.query_one("#next-track", NextTrackPanel)
         now_bpm = self._now_bpm
         next_bpm = self._next_bpm
@@ -458,8 +568,20 @@ class AutoMixApp(App):
         self._status("Rendering transition with rubberband...")
 
         def _on_progress(p: float) -> None:
+            # Drop progress updates from a superseded prep — otherwise an orphaned
+            # worker pushes its monotonically-climbing progress onto whichever
+            # track is now queued, scrambling that track's BPM animation.
+            if self._prep_epoch != my_epoch:
+                return
             # GIL-safe attribute write; the _tick() reader sees a consistent float.
-            self._prep_progress = max(0.0, min(1.0, p))
+            # Monotonic clamp: rubberband restarts the run from scratch when output
+            # clipping is detected (printing a fresh "Pass 1: ... 0%" sequence), which
+            # would otherwise yank the BPM display back to `next_bpm` mid-animation.
+            # By refusing to ever decrease, the display plateaus during restarts
+            # instead of oscillating.
+            p = min(1.0, p)
+            if p > self._prep_progress:
+                self._prep_progress = p
 
         def _work():
             try:
@@ -471,12 +593,18 @@ class AutoMixApp(App):
                     cue_audio, start_rate, fade_sec, restore_sec, SAMPLE_RATE,
                     progress_callback=_on_progress,
                 )
+                # Worker was superseded mid-render (user pressed N for a different
+                # track, or re-pressed P). Discard the now-orphaned buffer rather
+                # than installing it as the prep for the current next track.
+                if self._prep_epoch != my_epoch:
+                    return
                 self._next_prepared = buf
                 self._preparing = False
                 self.call_from_thread(self._on_prepared)
             except Exception as exc:
-                self._preparing = False
-                self.call_from_thread(self._status, f"Prepare error: {exc}")
+                if self._prep_epoch == my_epoch:
+                    self._preparing = False
+                    self.call_from_thread(self._status, f"Prepare error: {exc}")
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -494,13 +622,33 @@ class AutoMixApp(App):
         if self._next_prepared is None:
             self._status("Not prepared yet. Press P to prepare.")
             return
+        # Nothing playing to mix out of (track finished or never started).
+        if self.engine.state == State.IDLE:
+            self._status("No track playing to mix from. Load one with Enter first.")
+            return
         # Block mid-transition: the currently-playing buffer is either crossfading
         # or in the middle of its restoration ramp, so its current BPM doesn't match
-        # the `start_rate` baked into the prepared buffer.
-        if self.engine.state == State.MIXING or self._t_restore_start > 0.0:
-            self._status("Cannot mix — previous transition still in progress.")
+        # the `start_rate` baked into the prepared buffer. Phase-specific messages
+        # match the NowPlayingPanel banner.
+        if self.engine.state == State.MIXING:
+            self._status("Mixing the two tracks — cannot mix another track yet.")
+            return
+        if self._t_restore_start > 0.0:
+            self._status("Restoring original tempo — cannot mix another track yet.")
             return
         panel = self.query_one("#next-track", NextTrackPanel)
+
+        # Pick Track A's next downbeat as the schedule sample. We require both
+        # tracks to have downbeats AND the cue to be snapped — otherwise either
+        # side of the alignment is missing and we'd just be delaying the mix for
+        # no musical reason.
+        scheduled: Optional[int] = None
+        if self._now_downbeats and self._next_downbeats and panel.cue_snapped:
+            pos = self.engine.position
+            safety = int(0.1 * SAMPLE_RATE)  # let the audio thread next-tick safely
+            future = [d for d in self._now_downbeats if d > pos + safety]
+            if future:
+                scheduled = future[0]
 
         # BPM-display animation metadata — covers the rate ramp inside the precomputed buffer
         self._restore_from_bpm = self._now_bpm
@@ -508,19 +656,75 @@ class AutoMixApp(App):
         self._restore_seconds = max(0.5, panel.restore)
         self._t_restore_start = 0.0   # armed by the MIXING→PLAYING transition in _tick()
 
-        self.engine.start_mix(self._next_prepared, panel.fade)
+        self.engine.start_mix(self._next_prepared, panel.fade, scheduled_start_sample=scheduled)
 
-        # Update now-playing metadata to next track
-        self._now_path = self._next_path
-        self._now_bpm = self._next_bpm
-        self._now_key = self._next_key
-        now_panel = self.query_one("#now-playing", NowPlayingPanel)
-        now_panel.set_track(self._next_path, self._next_bpm, self._next_key)
+        # Snapshot the incoming track's metadata for the now-playing swap.
+        swap = (self._next_path, self._next_bpm, self._next_key, list(self._next_downbeats))
 
+        # The NEXT slot is committed — clear it regardless of immediate/deferred.
         self.query_one("#next-track", NextTrackPanel).clear()
         self._next_path = None
+        self._next_downbeats = []
         self._next_prepared = None
-        self._status("Mixing...")
+
+        if scheduled is not None:
+            # Deferred (bar-aligned): hold the swap until the crossfade fires so the
+            # NowPlaying panel keeps showing the outgoing track during the bar-wait.
+            self._pending_now_swap = swap
+            self._mix_scheduled = True
+            self._status(f"Waiting for downbeat at {_fmt_time(scheduled)}...")
+        else:
+            # Immediate: engine is already MIXING, so swap the display now.
+            self._apply_now_swap(swap)
+            self._mix_scheduled = False
+            self._status("Mixing (no bar alignment)..." if not panel.cue_snapped else "Mixing...")
+
+    def _apply_now_swap(self, swap: tuple) -> None:
+        """Promote a queued next-track's metadata to now-playing and update the
+        NowPlaying panel. Used by both the immediate and deferred mix paths."""
+        path, bpm, key, downbeats = swap
+        self._now_path = path
+        self._now_bpm = bpm
+        self._now_key = key
+        self._now_downbeats = downbeats
+        self.query_one("#now-playing", NowPlayingPanel).set_track(path, bpm, key)
+        self._pending_now_swap = None
+
+    def _handle_track_finished(self) -> None:
+        """Reset app state when the now-playing track ends naturally (engine went
+        IDLE without an explicit Stop). Clears now-playing, invalidates any in-flight
+        or completed prep (its start_rate was rendered against the track that just
+        ended), and drops transition/animation state. A queued NEXT track is kept
+        but marked unprepared so the user keeps their selection."""
+        self._now_path = None
+        self._now_bpm = 0.0
+        self._now_key = ""
+        self._now_downbeats = []
+        self._t_restore_start = 0.0
+        self._restore_from_bpm = 0.0
+        self._restore_to_bpm = 0.0
+        self._mix_scheduled = False
+        self._pending_now_swap = None
+        # Invalidate prep — its buffer (if any) was matched to the finished track.
+        self._prep_epoch += 1
+        self._preparing = False
+        self._prep_animating = False
+        self._prep_progress = 0.0
+        self._next_prepared = None
+        # Cancel any in-progress C/F/R text entry: the playback context just
+        # changed out from under it, and leaving _input_mode active would let the
+        # next keystroke re-stomp the "Track finished" status with a stale prompt.
+        self._input_mode = ""
+        self._input_buf = ""
+
+        self.query_one("#now-playing", NowPlayingPanel).clear()
+        if self._next_path is not None:
+            panel = self.query_one("#next-track", NextTrackPanel)
+            panel.set_display_bpm(None)
+            panel.set_status("\\[not prepared]")
+            self._status("Track finished. Press Enter to load a song (next track still queued).")
+        else:
+            self._status("Track finished. Select a song and press Enter.")
 
     def action_set_cue(self):
         if not self._next_path:
@@ -573,8 +777,10 @@ class AutoMixApp(App):
                 value = float(self._input_buf)
                 panel = self.query_one("#next-track", NextTrackPanel)
                 if self._input_mode == "cue":
+                    cue_before = panel.cue
                     panel.set_cue(value)
-                    self._status(f"Cue point set to {value:.1f}s")
+                    cue_after = panel.cue
+                    self._status(self._cue_status_message(value, cue_before, cue_after, panel))
                 elif self._input_mode == "fade":
                     panel.set_fade(value)
                     self._status(f"Fade duration set to {value:.1f}s")
@@ -607,6 +813,9 @@ class AutoMixApp(App):
 
     def _mark_stale(self) -> None:
         if self._next_prepared is not None or self._preparing:
+            # Bump epoch so an in-flight prep with the old cue/fade/restore won't
+            # silently install its (now stale) buffer when it finishes.
+            self._prep_epoch += 1
             self._next_prepared = None
             self._preparing = False
             self._prep_animating = False
@@ -620,7 +829,35 @@ class AutoMixApp(App):
     # ------------------------------------------------------------------
 
     def _tick(self):
+        now_t = time.time()
+        dt = now_t - self._last_tick_t
+        self._last_tick_t = now_t
+
         current_state = self.engine.state
+
+        # Freeze the wall-clock-driven restoration ramp while audio is paused, so
+        # the displayed BPM doesn't run ahead of the (frozen) playback. Shifting
+        # the start forward by dt keeps (now - start) constant across the pause.
+        if self._t_restore_start > 0.0 and self.engine.paused:
+            self._t_restore_start += dt
+
+        # A scheduled mix just fired — apply the deferred now-playing swap and
+        # replace the "Waiting for downbeat..." status.
+        if self._mix_scheduled and current_state == State.MIXING:
+            self._mix_scheduled = False
+            if self._pending_now_swap is not None:
+                self._apply_now_swap(self._pending_now_swap)
+            self._status("Mixing...")
+
+        # The now-playing track finished on its own (or a mixed-in track ran out) —
+        # the engine flipped to IDLE without an explicit Stop. Reset to a clean
+        # idle state so Enter can load a fresh track and no stale prep/buffer lingers.
+        if (
+            self._prev_engine_state in (State.PLAYING, State.MIXING)
+            and current_state == State.IDLE
+            and self._now_path is not None
+        ):
+            self._handle_track_finished()
 
         # The crossfade just ended — arm the BPM-display animation for the rate ramp
         # that's about to play out inside the precomputed buffer.
@@ -635,7 +872,7 @@ class AutoMixApp(App):
             anim_bpm = self._prep_from_bpm + (self._prep_to_bpm - self._prep_from_bpm) * t
             self.query_one("#next-track", NextTrackPanel).set_display_bpm(anim_bpm)
 
-        # NowPlayingPanel BPM display
+        # NowPlayingPanel BPM display + phase banner
         if self._now_path and current_state != State.IDLE:
             panel = self.query_one("#now-playing", NowPlayingPanel)
             if current_state == State.MIXING and self._restore_from_bpm > 0:
@@ -652,11 +889,42 @@ class AutoMixApp(App):
                     )
             else:
                 current_bpm = None
+
+            # Phase banner reflects whether action_mix_now would be accepted right
+            # now; the wording matches the status-line block messages so the user
+            # has one consistent story.
+            if current_state == State.MIXING:
+                panel.set_phase("MIXING the two tracks - cannot mix another track")
+            elif self._t_restore_start > 0.0:
+                panel.set_phase("RESTORING original tempo - cannot mix another track")
+            else:
+                panel.set_phase("")
             panel.refresh_progress(self.engine.position, self.engine.duration, current_bpm)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _cue_status_message(
+        self, typed: float, cue_before: float, cue_after: float, panel: "NextTrackPanel"
+    ) -> str:
+        """Status line wording for the Cue input. Surfaces unexpected snap outcomes
+        (no-op, or a jump > 1 bar) so the user can tell the snap happened and isn't
+        confused when typing a value appears to do nothing."""
+        if not panel.cue_snapped:
+            return f"Cue point set to {typed:.1f}s (no downbeats — no bar lock)"
+        bar_seconds = (60.0 / self._next_bpm) * 4 if self._next_bpm > 0 else 2.0
+        drift = typed - cue_after
+        if abs(cue_after - cue_before) < 0.001:
+            return (
+                f"Cue unchanged: nearest downbeat to {typed:.1f}s is still {cue_after:.2f}s"
+            )
+        if abs(drift) > bar_seconds:
+            return (
+                f"Cue snapped: {typed:.1f}s -> {cue_after:.2f}s "
+                f"(no downbeat closer than {abs(drift):.1f}s — gap in beat detection)"
+            )
+        return f"Cue snapped to downbeat at {cue_after:.2f}s"
 
     def _selected_song(self) -> Optional[str]:
         table = self.query_one("#song-list", DataTable)
@@ -668,7 +936,9 @@ class AutoMixApp(App):
         return self._songs_in_view[row]
 
     def _do_load_now(self, path: str):
-        bpm, key = self.library.get(path, (0.0, "?"))
+        rec = self.library.get(path, empty_record())
+        bpm, key = rec["bpm"], rec["key"]
+        downbeats = list(rec["downbeats"])
         # Clear any in-flight transition state so the new track's BPM display isn't
         # hijacked by a prior mix's restoration ramp. Without this, the previous
         # transition's `_t_restore_start` and from/to BPMs keep driving the
@@ -678,6 +948,15 @@ class AutoMixApp(App):
         self._t_restore_start = 0.0
         self._restore_from_bpm = 0.0
         self._restore_to_bpm = 0.0
+        self._mix_scheduled = False
+        # Orphan any in-flight prep: it was rendered with start_rate computed
+        # against the OLD now-playing BPM, so its buffer is wrong for the
+        # newly-loaded track. The bump makes the prep worker silently discard
+        # its buffer + progress writes on completion.
+        self._prep_epoch += 1
+        self._preparing = False
+        self._prep_animating = False
+        self._prep_progress = 0.0
         self._status(f"Loading: {Path(path).name}...")
 
         def _work():
@@ -686,6 +965,7 @@ class AutoMixApp(App):
                 self._now_path = path
                 self._now_bpm = bpm
                 self._now_key = key
+                self._now_downbeats = downbeats
                 self.engine.play(audio)
                 self.call_from_thread(
                     lambda: (

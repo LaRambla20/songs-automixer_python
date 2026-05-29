@@ -27,6 +27,10 @@ class AudioEngine:
         self._mix_pos: int = 0        # sample index in _next_audio during crossfade
         self._fade_samples: int = 0
         self._paused: bool = False
+        # When set, the callback stays in PLAYING until _position reaches this sample,
+        # then transitions to MIXING in the same audio frame. Used for downbeat-aligned
+        # mix starts; None for immediate mixing.
+        self._pending_mix_at: Optional[int] = None
 
         self._stream = sd.OutputStream(
             samplerate=SAMPLE_RATE,
@@ -44,6 +48,10 @@ class AudioEngine:
     @property
     def position(self) -> int:
         return self._position
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
 
     @property
     def duration(self) -> int:
@@ -76,23 +84,33 @@ class AudioEngine:
             self._next_audio = None
             self._position = 0
             self._paused = False
+            self._pending_mix_at = None
 
-    def seek(self, delta_samples: int):
-        with self._lock:
-            if self._now_audio is not None and self.state == State.PLAYING:
-                self._position = max(0, min(
-                    self._position + delta_samples,
-                    len(self._now_audio) - 1,
-                ))
+    def start_mix(
+        self,
+        next_audio: np.ndarray,
+        fade_seconds: float,
+        scheduled_start_sample: Optional[int] = None,
+    ):
+        """Crossfade from _now_audio into next_audio over fade_seconds.
 
-    def start_mix(self, next_audio: np.ndarray, fade_seconds: float):
+        If `scheduled_start_sample` is given, the crossfade is deferred until the
+        callback's `_position` reaches that sample (sample-accurate, no UI tick
+        polling). Used for downbeat-aligned mix starts. Pass None for the legacy
+        immediate-start behaviour.
+        """
         with self._lock:
             if self.state != State.PLAYING:
                 return
             self._next_audio = next_audio
             self._fade_samples = int(fade_seconds * SAMPLE_RATE)
             self._mix_pos = 0
-            self.state = State.MIXING
+            if scheduled_start_sample is None or scheduled_start_sample <= self._position:
+                self._pending_mix_at = None
+                self.state = State.MIXING
+            else:
+                self._pending_mix_at = int(scheduled_start_sample)
+                # state stays PLAYING; the callback flips to MIXING when _position arrives.
 
     def close(self):
         self._stream.stop()
@@ -113,6 +131,28 @@ class AudioEngine:
                 self._fill_mixing(outdata, frames)
 
     def _fill_playing(self, outdata: np.ndarray, frames: int):
+        # If a scheduled mix is armed and the trigger lies within this callback's
+        # span, split the chunk: fill the pre-trigger samples from _now_audio,
+        # transition to MIXING, then let _fill_mixing handle the remainder so
+        # there's no silence gap at the seam.
+        if (
+            self._pending_mix_at is not None
+            and self._pending_mix_at < self._position + frames
+        ):
+            trigger = max(self._pending_mix_at, self._position)
+            frames_before = trigger - self._position
+            if frames_before > 0:
+                chunk = self._get_chunk(self._now_audio, self._position, frames_before)
+                outdata[:frames_before] = chunk
+                self._position += frames_before
+            self.state = State.MIXING
+            self._mix_pos = 0
+            self._pending_mix_at = None
+            frames_after = frames - frames_before
+            if frames_after > 0:
+                self._fill_mixing(outdata[frames_before:], frames_after)
+            return
+
         chunk = self._get_chunk(self._now_audio, self._position, frames)
         outdata[:] = chunk
         self._position += frames
