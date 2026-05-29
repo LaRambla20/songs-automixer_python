@@ -17,6 +17,7 @@ from textual.widgets.tree import TreeNode
 from .audio_engine import AudioEngine, State, SAMPLE_RATE
 from .analyzer import SUPPORTED_EXTENSIONS, empty_record
 from .stretcher import make_transition_buffer
+from .transition import plan_transition, TransitionPlan
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +313,11 @@ class AutoMixApp(App):
         self._next_key: str = ""
         self._next_downbeats: List[int] = []
         self._next_prepared: Optional[np.ndarray] = None
+        # The skip-vs-stretch plan for the queued next track, computed at Prepare
+        # time. Held alongside _next_prepared and reset in lockstep with it; a
+        # skip plan means _next_prepared is the raw cue audio (no rubberband) and
+        # action_mix_now must NOT arm a restoration ramp.
+        self._next_plan: Optional[TransitionPlan] = None
         self._preparing: bool = False
         # True between Mix-pressed and the scheduled crossfade actually firing;
         # _tick uses it to update the status line when state flips PLAYING→MIXING.
@@ -503,6 +509,7 @@ class AutoMixApp(App):
         self._prep_animating = False
         self._prep_progress = 0.0
         self._next_prepared = None
+        self._next_plan = None
         self.query_one("#now-playing", NowPlayingPanel).clear()
         if self._next_path is not None:
             panel = self.query_one("#next-track", NextTrackPanel)
@@ -527,6 +534,7 @@ class AutoMixApp(App):
         self._next_key = key
         self._next_downbeats = list(rec["downbeats"])
         self._next_prepared = None
+        self._next_plan = None
         self._preparing = False
         self._prep_animating = False
         self._prep_progress = 0.0
@@ -560,11 +568,20 @@ class AutoMixApp(App):
         cue_sec = panel.cue
         fade_sec = panel.fade
         restore_sec = panel.restore
+
+        # Decide skip-vs-stretch up front. A skip plan (near-identical tempos or
+        # an exact half-/double-time pair) renders no rubberband at all.
+        plan = plan_transition(now_bpm, next_bpm, fade_sec)
+
+        if plan.skip:
+            self._prepare_skip(panel, next_path, cue_sec, plan, my_epoch)
+            return
+
         self._prep_animating = True
         self._prep_progress = 0.0
         self._prep_from_bpm = next_bpm
-        self._prep_to_bpm = now_bpm
-        panel.set_status(f"\\[PREPARING...] {next_bpm:.1f}→{now_bpm:.1f} BPM")
+        self._prep_to_bpm = plan.matched_bpm
+        panel.set_status(f"\\[PREPARING...] {next_bpm:.1f}→{plan.matched_bpm:.1f} BPM")
         self._status("Rendering transition with rubberband...")
 
         def _on_progress(p: float) -> None:
@@ -588,9 +605,8 @@ class AutoMixApp(App):
                 audio = self.engine.load_audio(next_path)
                 cue_sample = int(cue_sec * SAMPLE_RATE)
                 cue_audio = audio[cue_sample:]
-                start_rate = now_bpm / next_bpm if next_bpm > 0 else 1.0
                 buf = make_transition_buffer(
-                    cue_audio, start_rate, fade_sec, restore_sec, SAMPLE_RATE,
+                    cue_audio, plan.start_rate, fade_sec, restore_sec, SAMPLE_RATE,
                     progress_callback=_on_progress,
                 )
                 # Worker was superseded mid-render (user pressed N for a different
@@ -599,6 +615,36 @@ class AutoMixApp(App):
                 if self._prep_epoch != my_epoch:
                     return
                 self._next_prepared = buf
+                self._next_plan = plan
+                self._preparing = False
+                self.call_from_thread(self._on_prepared)
+            except Exception as exc:
+                if self._prep_epoch == my_epoch:
+                    self._preparing = False
+                    self.call_from_thread(self._status, f"Prepare error: {exc}")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _prepare_skip(self, panel, next_path, cue_sec, plan: TransitionPlan, my_epoch: int):
+        """Prepare path for a no-stretch mix: load the track and stash the raw
+        cue audio as the prepared buffer — no rubberband, no BPM animation. The
+        incoming track plays at its natural tempo, so there's nothing to restore."""
+        self._prep_animating = False
+        self._prep_progress = 1.0
+        panel.set_display_bpm(None)
+        rel = f" ({plan.relation})" if plan.relation else ""
+        panel.set_status(f"\\[PREPARING...] tempo matched{rel}, no stretch")
+        self._status("Tempo within drift budget — preparing without stretch...")
+
+        def _work():
+            try:
+                audio = self.engine.load_audio(next_path)
+                cue_sample = int(cue_sec * SAMPLE_RATE)
+                cue_audio = audio[cue_sample:]
+                if self._prep_epoch != my_epoch:
+                    return
+                self._next_prepared = cue_audio
+                self._next_plan = plan
                 self._preparing = False
                 self.call_from_thread(self._on_prepared)
             except Exception as exc:
@@ -611,11 +657,14 @@ class AutoMixApp(App):
     def _on_prepared(self):
         self._prep_animating = False
         self._prep_progress = 1.0
-        next_bpm = self._next_bpm
-        now_bpm = self._now_bpm
-        self.query_one("#next-track", NextTrackPanel).set_status(
-            f"\\[READY - press M] {next_bpm:.1f}→{now_bpm:.1f} BPM"
-        )
+        plan = self._next_plan
+        panel = self.query_one("#next-track", NextTrackPanel)
+        if plan is not None and plan.skip:
+            rel = f" ({plan.relation})" if plan.relation else ""
+            panel.set_status(f"\\[READY - press M] {self._next_bpm:.1f} BPM, no stretch{rel}")
+        else:
+            matched = plan.matched_bpm if plan is not None else self._now_bpm
+            panel.set_status(f"\\[READY - press M] {self._next_bpm:.1f}→{matched:.1f} BPM")
         self._status("Mix prepared.")
 
     def action_mix_now(self):
@@ -650,12 +699,20 @@ class AutoMixApp(App):
             if future:
                 scheduled = future[0]
 
-        # BPM-display animation metadata — covers the rate ramp inside the precomputed buffer
-        self._restore_from_bpm = self._now_bpm
-        self._restore_to_bpm = self._next_bpm
+        # BPM-display animation metadata — covers the rate ramp baked into the
+        # precomputed buffer. On a SKIP mix the incoming track plays at its natural
+        # tempo throughout (no rate ramp), so leave from/to at 0.0 — this keeps
+        # _tick from arming a restoration ramp or overriding the now-playing BPM.
+        if self._next_plan is not None and self._next_plan.skip:
+            self._restore_from_bpm = 0.0
+            self._restore_to_bpm = 0.0
+        else:
+            self._restore_from_bpm = self._next_plan.matched_bpm if self._next_plan else self._now_bpm
+            self._restore_to_bpm = self._next_bpm
         self._restore_seconds = max(0.5, panel.restore)
         self._t_restore_start = 0.0   # armed by the MIXING→PLAYING transition in _tick()
 
+        skip = self._next_plan is not None and self._next_plan.skip
         self.engine.start_mix(self._next_prepared, panel.fade, scheduled_start_sample=scheduled)
 
         # Snapshot the incoming track's metadata for the now-playing swap.
@@ -666,18 +723,21 @@ class AutoMixApp(App):
         self._next_path = None
         self._next_downbeats = []
         self._next_prepared = None
+        self._next_plan = None
 
+        tail = " (no stretch)" if skip else ""
         if scheduled is not None:
             # Deferred (bar-aligned): hold the swap until the crossfade fires so the
             # NowPlaying panel keeps showing the outgoing track during the bar-wait.
             self._pending_now_swap = swap
             self._mix_scheduled = True
-            self._status(f"Waiting for downbeat at {_fmt_time(scheduled)}...")
+            self._status(f"Waiting for downbeat at {_fmt_time(scheduled)}...{tail}")
         else:
             # Immediate: engine is already MIXING, so swap the display now.
             self._apply_now_swap(swap)
             self._mix_scheduled = False
-            self._status("Mixing (no bar alignment)..." if not panel.cue_snapped else "Mixing...")
+            base = "Mixing (no bar alignment)" if not panel.cue_snapped else "Mixing"
+            self._status(f"{base}...{tail}")
 
     def _apply_now_swap(self, swap: tuple) -> None:
         """Promote a queued next-track's metadata to now-playing and update the
@@ -711,6 +771,7 @@ class AutoMixApp(App):
         self._prep_animating = False
         self._prep_progress = 0.0
         self._next_prepared = None
+        self._next_plan = None
         # Cancel any in-progress C/F/R text entry: the playback context just
         # changed out from under it, and leaving _input_mode active would let the
         # next keystroke re-stomp the "Track finished" status with a stale prompt.
@@ -817,6 +878,7 @@ class AutoMixApp(App):
             # silently install its (now stale) buffer when it finishes.
             self._prep_epoch += 1
             self._next_prepared = None
+            self._next_plan = None
             self._preparing = False
             self._prep_animating = False
             self._prep_progress = 0.0

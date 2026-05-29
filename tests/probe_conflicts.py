@@ -41,6 +41,7 @@ def build_app():
     app._next_key = ""
     app._next_downbeats = []
     app._next_prepared = None
+    app._next_plan = None
     app._preparing = False
     app._mix_scheduled = False
     app._pending_now_swap = None
