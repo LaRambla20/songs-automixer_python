@@ -212,6 +212,56 @@ def test_queue_now_playing_song_as_next():
     print("  PASS self-mix: now-playing song queues as next, start_rate=1.0, no ramp")
 
 
+def test_phase_banner_states():
+    """_tick selects one of four NowPlaying phase banners from engine state +
+    flags. WAITING is the deferred bar-wait window (PLAYING + _mix_scheduled),
+    distinct from MIXING / RESTORING / Ready."""
+    def last_phase(app):
+        phases = [c for c in app._now_panel.calls if c[0] == "set_phase"]
+        return phases[-1][1][0] if phases else None
+
+    # WAITING: deferred mix armed, engine still PLAYING (crossfade not yet fired).
+    app = build_app()
+    app.engine.state = State.PLAYING
+    app._prev_engine_state = State.PLAYING
+    app._now_path = "/old.mp3"; app._now_bpm = 120.0
+    app._mix_scheduled = True
+    app._pending_now_swap = ("/new.mp3", 128.0, "A min", [100, 200])
+    app._restore_from_bpm = 120.0; app._restore_to_bpm = 128.0
+    app._tick()
+    assert "WAITING for downbeat" in last_phase(app), last_phase(app)
+    assert app._now_path == "/old.mp3", "swap must not apply during the wait"
+
+    # MIXING: crossfade actually running.
+    app = build_app()
+    app.engine.state = State.MIXING
+    app._prev_engine_state = State.MIXING
+    app._now_path = "/new.mp3"; app._now_bpm = 128.0
+    app._restore_from_bpm = 120.0; app._restore_to_bpm = 128.0
+    app._tick()
+    assert "MIXING the two tracks" in last_phase(app), last_phase(app)
+
+    # RESTORING: tempo ramp running after the crossfade (PLAYING, ramp armed).
+    app = build_app()
+    app.engine.state = State.PLAYING
+    app._prev_engine_state = State.PLAYING
+    app._now_path = "/new.mp3"; app._now_bpm = 128.0
+    app._restore_from_bpm = 120.0; app._restore_to_bpm = 128.0
+    app._restore_seconds = 30.0
+    app._t_restore_start = time.time() - 1.0   # ~3% through, well short of done
+    app._tick()
+    assert "RESTORING original tempo" in last_phase(app), last_phase(app)
+
+    # Ready: plain playback, nothing pending.
+    app = build_app()
+    app.engine.state = State.PLAYING
+    app._prev_engine_state = State.PLAYING
+    app._now_path = "/new.mp3"; app._now_bpm = 128.0
+    app._tick()
+    assert "Ready to mix another song" in last_phase(app), last_phase(app)
+    print("  PASS phase banner: WAITING / MIXING / RESTORING / Ready selected correctly")
+
+
 def test_track_finish_cancels_input_mode():
     """A C/F/R text entry in progress when the track ends naturally must be
     cancelled, so a later keystroke doesn't re-render a stale input prompt over
@@ -238,5 +288,6 @@ if __name__ == "__main__":
     test_D_ramp_frozen_while_paused()
     test_stop_invalidates_completed_prep()
     test_queue_now_playing_song_as_next()
+    test_phase_banner_states()
     test_track_finish_cancels_input_mode()
     print("\nAll conflict-handling tests passed.")

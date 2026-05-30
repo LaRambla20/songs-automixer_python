@@ -1084,6 +1084,8 @@ class AutoMixApp(App):
             # has one consistent story.
             if current_state == State.MIXING:
                 panel.set_phase("MIXING the two tracks - cannot mix another track")
+            elif self._mix_scheduled:
+                panel.set_phase("WAITING for downbeat - cannot mix another track")
             elif self._t_restore_start > 0.0:
                 panel.set_phase("RESTORING original tempo - cannot mix another track")
             else:
