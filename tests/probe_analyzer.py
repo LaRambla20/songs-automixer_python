@@ -33,4 +33,4 @@ for path in paths:
         print(f"  downbeat spans (sec): {[f'{s:.3f}' for s in spans_sec]}  (expected ~{expected_bar:.3f}s)")
     # cache structure check
     assert "bpm" in rec and "key" in rec and "beats" in rec and "downbeats" in rec
-print("\nAll fields present in records.")
+print("\nAll analyzer record-field checks passed.")
