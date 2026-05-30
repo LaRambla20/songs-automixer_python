@@ -202,24 +202,47 @@ class FolderTree(Tree):
                 event.stop()
                 node.expand()
                 # Root just reveals its subfolders and keeps focus on the tree
-                # (root display -> subfolder display). A subfolder additionally
-                # loads its songs and hands focus to the song panel.
-                if node is not self.root:
+                # (root display -> subfolder display), moving the highlight down
+                # onto the first subfolder. A subfolder additionally loads its
+                # songs and hands focus to the song panel.
+                if node is self.root:
+                    if node.children:
+                        self.cursor_line = node.line + 1
+                else:
                     self.post_message(self.GoToSongs(node.data))
         elif event.key == "left":
-            # Walk back up one level: collapse an expanded node (subfolder display
-            # -> root display), otherwise step the cursor to its parent. This is
-            # the tree-side mirror of the DataTable left-arrow that exits browsing.
+            # Go up one display level in a single press: collapse the parent folder
+            # and move the highlight onto it. From a first-level subfolder the parent
+            # is the root, so one press lands back on the collapsed root (subfolder
+            # display -> root display). This is the tree-side mirror of the DataTable
+            # left-arrow that exits song browsing.
             node = self.cursor_node
-            if node is not None:
-                if node.allow_expand and node.is_expanded:
-                    event.prevent_default()
-                    event.stop()
-                    node.collapse()
-                elif node.parent is not None and node.parent.line >= 0:
-                    event.prevent_default()
-                    event.stop()
-                    self.cursor_line = node.parent.line
+            if node is None:
+                return
+            parent = node.parent
+            if parent is not None and parent.line >= 0:
+                event.prevent_default()
+                event.stop()
+                self.cursor_line = parent.line  # set before collapse: parent.line is stable
+                parent.collapse()
+            elif node.allow_expand and node.is_expanded:
+                # Fallback: an expanded node with no displayable parent (the root in
+                # subfolder display) — collapse it in place.
+                event.prevent_default()
+                event.stop()
+                node.collapse()
+        elif event.key == "up":
+            # Once subfolders are shown, up/down navigate only among them — the root
+            # is never re-highlighted by navigation. It returns to the highlight only
+            # via the left-arrow collapse above. Block the step that would land on it.
+            above = (
+                self.get_node_at_line(self.cursor_line - 1)
+                if self.cursor_line > 0
+                else None
+            )
+            if above is self.root:
+                event.prevent_default()
+                event.stop()
         elif event.key == "space":
             # Tree's built-in space binding toggles node expansion, which would
             # flip the folder's arrow while browsing. Suppress that and route the
@@ -478,8 +501,13 @@ class AutoMixApp(App):
         node = event.node
         if not (node.data and isinstance(node.data, str) and os.path.isdir(node.data)):
             return
+        tree = self.query_one("#folder-tree", FolderTree)
         node.expand()
-        if node is self.query_one("#folder-tree", FolderTree).root:
+        if node is tree.root:
+            # root display -> subfolder display: move the highlight onto the
+            # first subfolder so the user is positioned to drill in.
+            if node.children:
+                tree.cursor_line = node.line + 1
             return
         self._load_songs_for(node.data)
         self.query_one("#song-list", DataTable).focus()
