@@ -43,7 +43,8 @@ class FakeNextPanel:
 
 class FakeNowPanel:
     def __init__(self): self.calls = []
-    def set_track(self, *a): self.calls.append(("set_track", a))
+    def set_track(self, *a, **k): self.calls.append(("set_track", a))
+    def clear_mix_from(self): self.calls.append(("clear_mix_from",))
     def clear(self): self.calls.append(("clear",))
 
 

@@ -44,25 +44,38 @@ class NowPlayingPanel(Static):
         self._path: Optional[str] = None
         self._bpm: float = 0.0
         self._key: str = ""
+        # Outgoing track name shown as "outgoing → incoming" alongside the
+        # incoming one, ONLY while a crossfade is in progress; None for the
+        # normal single-track display. Set via set_track(mix_from=...) when the
+        # now-playing swap fires, cleared by clear_mix_from() at MIXING→PLAYING.
+        self._mix_from: Optional[str] = None
         # Set by _tick to surface the current transition phase (MIXING vs
         # tempo-restoration vs idle). Drives the third panel line.
         self._phase: str = ""
 
-    def set_track(self, path: str, bpm: float, key: str):
+    def set_track(self, path: str, bpm: float, key: str, mix_from: Optional[str] = None):
         self._path = path
         self._bpm = bpm
         self._key = key
+        self._mix_from = mix_from
         self._phase = ""
         self.refresh_progress(0, 0)
 
     def set_phase(self, phase: str) -> None:
         self._phase = phase
 
+    def clear_mix_from(self) -> None:
+        """Drop the outgoing-track name (crossfade finished) so the panel shows
+        only the now-playing track again."""
+        self._mix_from = None
+
     def refresh_progress(self, position: int, duration: int, current_bpm: Optional[float] = None):
         if self._path is None:
             self.update("NOW PLAYING: \\[no track loaded]")
             return
         name = _escape(Path(self._path).name)
+        if self._mix_from:
+            name = f"{_escape(self._mix_from)} → {name}"
         pct = position / duration if duration > 0 else 0.0
         bar_len = 32
         filled = int(pct * bar_len)
@@ -78,6 +91,7 @@ class NowPlayingPanel(Static):
 
     def clear(self):
         self._path = None
+        self._mix_from = None
         self._phase = ""
         self.update("NOW PLAYING: \\[no track loaded]")
 
@@ -833,11 +847,17 @@ class AutoMixApp(App):
         """Promote a queued next-track's metadata to now-playing and update the
         NowPlaying panel. Used by both the immediate and deferred mix paths."""
         path, bpm, key, downbeats = swap
+        # Capture the outgoing track's name BEFORE overwriting _now_path, so the
+        # panel can show "outgoing → incoming" for the crossfade. Cleared at
+        # MIXING→PLAYING in _tick().
+        outgoing = Path(self._now_path).name if self._now_path else None
         self._now_path = path
         self._now_bpm = bpm
         self._now_key = key
         self._now_downbeats = downbeats
-        self.query_one("#now-playing", NowPlayingPanel).set_track(path, bpm, key)
+        self.query_one("#now-playing", NowPlayingPanel).set_track(
+            path, bpm, key, mix_from=outgoing
+        )
         self._refresh_match_markers()
         self._pending_now_swap = None
 
@@ -1026,9 +1046,11 @@ class AutoMixApp(App):
         ):
             self._handle_track_finished()
 
-        # The crossfade just ended — arm the BPM-display animation for the rate ramp
-        # that's about to play out inside the precomputed buffer.
+        # The crossfade just ended — drop the "outgoing → incoming" dual name (only
+        # the incoming track plays now) and arm the BPM-display animation for the
+        # rate ramp that's about to play out inside the precomputed buffer.
         if self._prev_engine_state == State.MIXING and current_state == State.PLAYING:
+            self.query_one("#now-playing", NowPlayingPanel).clear_mix_from()
             if self._restore_to_bpm > 0 and abs(self._restore_from_bpm - self._restore_to_bpm) > 0.01:
                 self._t_restore_start = time.time()
         self._prev_engine_state = current_state

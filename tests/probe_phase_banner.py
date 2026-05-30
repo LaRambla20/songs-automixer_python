@@ -44,8 +44,26 @@ def test_set_track_clears_phase():
     print("\nset_track clears stale phase: PASS")
 
 
+def test_mix_from_dual_name():
+    p, last = make_panel()
+    # During a crossfade the panel shows "outgoing -> incoming".
+    p.set_track("/songs/A.mp3", bpm=120.0, key="C maj", mix_from="OldSong.mp3")
+    p.refresh_progress(44100 * 5, 44100 * 200)
+    assert "OldSong.mp3 → A.mp3" in last["text"], "expected dual name with arrow"
+    # clear_mix_from reverts to the single incoming track.
+    p.clear_mix_from()
+    p.refresh_progress(44100 * 6, 44100 * 200)
+    assert "→" not in last["text"] and "A.mp3" in last["text"], "should revert to single name"
+    # a plain set_track (no mix_from) never shows the arrow.
+    p.set_track("/songs/B.mp3", bpm=130.0, key="A min")
+    p.refresh_progress(0, 44100 * 100)
+    assert "→" not in last["text"], "single-track display must not show arrow"
+    print("\nmix-from dual name: PASS")
+
+
 if __name__ == "__main__":
     test_no_phase()
     test_with_phase()
     test_set_track_clears_phase()
+    test_mix_from_dual_name()
     print("\nAll phase-banner tests passed.")
