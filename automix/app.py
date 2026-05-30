@@ -200,7 +200,35 @@ class FolderTree(Tree):
             if node and node.data and isinstance(node.data, str) and os.path.isdir(node.data):
                 event.prevent_default()
                 event.stop()
-                self.post_message(self.GoToSongs(node.data))
+                node.expand()
+                # Root just reveals its subfolders and keeps focus on the tree
+                # (root display -> subfolder display). A subfolder additionally
+                # loads its songs and hands focus to the song panel.
+                if node is not self.root:
+                    self.post_message(self.GoToSongs(node.data))
+        elif event.key == "left":
+            # Walk back up one level: collapse an expanded node (subfolder display
+            # -> root display), otherwise step the cursor to its parent. This is
+            # the tree-side mirror of the DataTable left-arrow that exits browsing.
+            node = self.cursor_node
+            if node is not None:
+                if node.allow_expand and node.is_expanded:
+                    event.prevent_default()
+                    event.stop()
+                    node.collapse()
+                elif node.parent is not None and node.parent.line >= 0:
+                    event.prevent_default()
+                    event.stop()
+                    self.cursor_line = node.parent.line
+        elif event.key == "space":
+            # Tree's built-in space binding toggles node expansion, which would
+            # flip the folder's arrow while browsing. Suppress that and route the
+            # key to the app's global Play/Pause instead — node expand/collapse is
+            # reserved for Enter / click / right-arrow. (prevent_default blocks the
+            # Tree binding; we forward explicitly so space still pauses playback.)
+            event.prevent_default()
+            event.stop()
+            self.app.action_toggle_pause()
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +411,8 @@ class AutoMixApp(App):
     def on_mount(self):
         self._setup_song_table()
         self._build_tree()
-        self._load_songs_for(self.root_folder)
+        # Song panel starts empty: songs load only when a subfolder is entered.
+        self.query_one("#folder-tree", FolderTree).focus()
         self.set_interval(0.1, self._tick)
 
     def _setup_song_table(self):
@@ -397,9 +426,13 @@ class AutoMixApp(App):
 
     def _build_tree(self):
         tree = self.query_one("#folder-tree", Tree)
+        # Drive expansion from the navigation handlers (so Enter/click don't
+        # auto-toggle), and open on the "root display" with the root collapsed —
+        # the user expands into the subfolder display, then into song browsing.
+        tree.auto_expand = False
         tree.root.data = self.root_folder
-        tree.root.expand()
         self._populate_node(tree.root, self.root_folder)
+        tree.cursor_line = 0
 
     def _populate_node(self, node: TreeNode, folder: str):
         try:
@@ -437,8 +470,19 @@ class AutoMixApp(App):
             self._populate_node(node, node.data)
 
     def on_tree_node_selected(self, event: Tree.NodeSelected):
-        if event.node.data and isinstance(event.node.data, str) and os.path.isdir(event.node.data):
-            self._load_songs_for(event.node.data)
+        # Enter / mouse-click. The FolderTree has auto_expand disabled, so we drive
+        # expansion explicitly here. Root just reveals its subfolders and keeps
+        # focus on the tree (root display -> subfolder display); a subfolder expands,
+        # loads its songs, and hands focus to the song panel — same three gestures
+        # (Enter / click / right-arrow) that the GoToSongs contract covers.
+        node = event.node
+        if not (node.data and isinstance(node.data, str) and os.path.isdir(node.data)):
+            return
+        node.expand()
+        if node is self.query_one("#folder-tree", FolderTree).root:
+            return
+        self._load_songs_for(node.data)
+        self.query_one("#song-list", DataTable).focus()
 
     def on_folder_tree_go_to_songs(self, event: FolderTree.GoToSongs) -> None:
         self._load_songs_for(event.folder)
@@ -840,7 +884,20 @@ class AutoMixApp(App):
                 table = self.query_one("#song-list", DataTable)
                 table.clear()
                 self._songs_in_view = []
-                self.query_one("#folder-tree", FolderTree).focus()
+                tree = self.query_one("#folder-tree", FolderTree)
+                # Collapse the folder we were browsing so its arrow returns to
+                # pointing right — exiting the song list should undo the expansion
+                # that entering it produced. Skip the root (collapsing it would
+                # hide the whole tree).
+                node = tree.cursor_node
+                if (
+                    node is not None
+                    and node is not tree.root
+                    and node.allow_expand
+                    and node.is_expanded
+                ):
+                    node.collapse()
+                tree.focus()
                 event.prevent_default()
                 event.stop()
             return
@@ -980,7 +1037,7 @@ class AutoMixApp(App):
             elif self._t_restore_start > 0.0:
                 panel.set_phase("RESTORING original tempo - cannot mix another track")
             else:
-                panel.set_phase("")
+                panel.set_phase("Ready to mix another song")
             panel.refresh_progress(self.engine.position, self.engine.duration, current_bpm)
 
     # ------------------------------------------------------------------
