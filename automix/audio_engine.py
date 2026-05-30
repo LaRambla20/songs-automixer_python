@@ -58,6 +58,18 @@ class AudioEngine:
         audio = self._now_audio
         return len(audio) if audio is not None else 0
 
+    @property
+    def mix_position(self) -> int:
+        """Sample index into the incoming track (_next_audio) during a crossfade.
+        Only meaningful while state == MIXING; 0 otherwise."""
+        return self._mix_pos
+
+    @property
+    def mix_duration(self) -> int:
+        """Length of the incoming (pre-rendered) buffer during a crossfade, 0 if none."""
+        audio = self._next_audio
+        return len(audio) if audio is not None else 0
+
     def load_audio(self, path: str) -> np.ndarray:
         """Decode any ffmpeg-supported file. Returns (N, 2) float32 array."""
         from pydub import AudioSegment

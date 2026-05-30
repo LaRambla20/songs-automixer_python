@@ -25,6 +25,8 @@ class FakeEngine:
         self.paused = False
         self.position = 0
         self.duration = 0
+        self.mix_position = 0
+        self.mix_duration = 0
     def stop(self):
         self.state = State.IDLE
 

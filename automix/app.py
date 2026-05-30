@@ -34,6 +34,16 @@ def _fmt_time(samples: int) -> str:
     return f"{secs // 60}:{secs % 60:02d}"
 
 
+def _progress_segment(position: int, duration: int, bar_len: int) -> str:
+    """One "M:SS / M:SS  [####----]" readout. The leading bracket is escaped
+    (\\[) because Textual runs Static.update() text through Rich markup — an
+    unescaped "[#..." reads as a colour tag and the bar vanishes."""
+    pct = position / duration if duration > 0 else 0.0
+    filled = max(0, min(bar_len, int(pct * bar_len)))
+    bar = "#" * filled + "-" * (bar_len - filled)
+    return f"{_fmt_time(position)} / {_fmt_time(duration)}  \\[{bar}]"
+
+
 # ---------------------------------------------------------------------------
 # Sub-widgets
 # ---------------------------------------------------------------------------
@@ -69,21 +79,33 @@ class NowPlayingPanel(Static):
         only the now-playing track again."""
         self._mix_from = None
 
-    def refresh_progress(self, position: int, duration: int, current_bpm: Optional[float] = None):
+    def refresh_progress(
+        self,
+        position: int,
+        duration: int,
+        current_bpm: Optional[float] = None,
+        mix_position: Optional[int] = None,
+        mix_duration: Optional[int] = None,
+    ):
         if self._path is None:
             self.update("NOW PLAYING: \\[no track loaded]")
             return
         name = _escape(Path(self._path).name)
         if self._mix_from:
             name = f"{_escape(self._mix_from)} → {name}"
-        pct = position / duration if duration > 0 else 0.0
-        bar_len = 32
-        filled = int(pct * bar_len)
-        bar = "#" * filled + "-" * (bar_len - filled)
         bpm = current_bpm if current_bpm is not None else self._bpm
+        # During a crossfade, show two bars side by side — the outgoing track
+        # (left of the arrow) and the incoming track (right) — mirroring the
+        # "outgoing → incoming" name line. Otherwise a single full-width bar.
+        if mix_duration:
+            out_seg = _progress_segment(position, duration, 18)
+            in_seg = _progress_segment(mix_position or 0, mix_duration, 18)
+            time_line = f"  {out_seg}  →  {in_seg}"
+        else:
+            time_line = f"  {_progress_segment(position, duration, 32)}"
         lines = [
             f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}",
-            f"  {_fmt_time(position)} / {_fmt_time(duration)}  [{bar}]",
+            time_line,
         ]
         if self._phase:
             lines.append(f"  {self._phase}")
@@ -1090,7 +1112,20 @@ class AutoMixApp(App):
                 panel.set_phase("RESTORING original tempo - cannot mix another track")
             else:
                 panel.set_phase("Ready to mix another song")
-            panel.refresh_progress(self.engine.position, self.engine.duration, current_bpm)
+            # During the crossfade, hand the panel the incoming track's progress
+            # too so it can show both bars (outgoing → incoming) side by side.
+            if current_state == State.MIXING:
+                mix_position: Optional[int] = self.engine.mix_position
+                mix_duration: Optional[int] = self.engine.mix_duration
+            else:
+                mix_position = mix_duration = None
+            panel.refresh_progress(
+                self.engine.position,
+                self.engine.duration,
+                current_bpm,
+                mix_position,
+                mix_duration,
+            )
 
     # ------------------------------------------------------------------
     # Helpers
