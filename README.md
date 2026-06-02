@@ -73,6 +73,15 @@ If `pip install` fails with `CERTIFICATE_VERIFY_FAILED` / `unable to get local i
 python main.py /path/to/music/folder
 ```
 
+To use a different backspin SFX for the `B` transition (default `samples/top_DJ_Rewind_SFX_10.mp3`):
+
+```bash
+python main.py /path/to/music/folder --backspin backspin_09.wav   # bare name → resolved in samples/
+python main.py /path/to/music/folder --backspin /path/to/my_rewind.wav   # or an explicit path
+```
+
+The resolved sample must exist or the app exits at startup.
+
 On first launch the app analyses every audio file (BPM + key detection). Results are cached in `~/.automix_cache.json`, so subsequent launches are instant.
 
 While a track is playing, the song list shows a **`:)`** next to every track whose tempo is mixable with it — including half-time and double-time matches (e.g. a 64 BPM track is flagged against a 128 BPM track). It's a quick way to spot good next-track candidates.
@@ -88,20 +97,23 @@ While a track is playing, the song list shows a **`:)`** next to every track who
 | `S` | Stop |
 | `→` | In folder tree: load the folder's songs and jump to the song list |
 | `←` | In song list: clear it and return to the folder tree |
-| `C` | Set cue point on next track (seconds into the track) |
+| `C` | Set cue point on next track (seconds in). The crossfade snaps it to the nearest bar (shown as `Mix:`); the backspin uses the raw value (shown as `Cue:`) |
 | `F` | Set fade duration in seconds (default: 16) |
 | `P` | Prepare mix — tempo-matches next track to current BPM (skips stretching when tempos already match) |
 | `M` | Mix now — start the crossfade |
+| `B` | Backspin transition — stop the current track, play a backspin SFX, then drop the next track in from its cue (see below) |
 | `Q` | Quit |
 
 ## Auto-Mix Workflow
 
 1. Press `Enter` on a track to start playing it.
 2. Navigate to the next track and press `N` to queue it.
-3. Optionally press `C` to set where in the next track the fade-in should start (cue point).
+3. Optionally press `C` to set where in the next track it should start (cue point).
 4. Optionally press `F` to change the crossfade duration.
 5. Press `P` to prepare the mix (time-stretches the next track in the background).
 6. Press `M` when ready to start the crossfade.
+
+Or, instead of steps 4–6, press `B` for a **backspin transition** — a quick, hard cut with a DJ rewind effect (see below). It needs the next track queued (step 2) but **not** prepared.
 
 ## Smart tempo matching
 
@@ -112,11 +124,15 @@ When you prepare a mix, AutoMix compares the two tracks' tempos (accounting for 
 
 The `:)` indicator in the song list flags tempo-compatible tracks (within a DJ-style beatmatching range, octave-folded), so you can spot good next-track candidates at a glance — closely matched ones will mix with little or no stretching.
 
-## Roadmap
+## Backspin transition
 
-### Backspin / rewind transition (planned)
+A DJ-style **backspin / rewind** transition, distinct from the beat-matched crossfade. Press `B` and AutoMix abruptly stops the current track, plays a backspin SFX one-shot, then drops the queued next track straight in at its natural tempo — no crossfade, no time-stretching. It's the third transition mode alongside **skip** (no stretch) and **stretch** (`rubberband` rate-ramp).
 
-A future special transition mode — a DJ-style **backspin / rewind** effect layered into the mix, distinct from the current beat-matched crossfade. The `samples/` folder stages the source SFX for it (vinyl rewind, backspin, and scratch one-shots in `.wav` / `.mp3`). This is not wired into the app yet; when built, it will slot in as a third transition mode alongside the existing **skip** (no stretch) and **stretch** (`rubberband` rate-ramp) paths.
+It needs a track playing and a next track queued (`N`) that is **raw** — not prepared and not being prepared (`B` is rejected if you've pressed `P`). It's also blocked mid-crossfade and during the post-mix tempo restoration. Any other time, `B` reports why it can't run.
+
+The next track starts from its **raw** cue — `0:00` by default, or exactly the value you typed with `C` (unlike the crossfade, which snaps the cue to the nearest bar). The panel shows both: `Cue:` is where a backspin starts, `Mix:` is where a crossfade starts.
+
+The SFX defaults to `samples/top_DJ_Rewind_SFX_10.mp3`; override it with `--backspin` (see [Usage](#usage)). The `samples/` folder ships several rewind / backspin / scratch one-shots in `.wav` / `.mp3` to choose from.
 
 ## Supported Formats
 

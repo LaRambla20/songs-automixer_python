@@ -70,8 +70,33 @@ def test_new_song_no_downbeats():
     print("  PASS: empty downbeats track gets cue=0, no bar lock")
 
 
+def test_raw_cue_diverges_from_snapped():
+    # The backspin uses raw_cue (unsnapped); the mix uses the snapped cue. After a
+    # typed value lands between downbeats, the two must diverge.
+    panel = make_panel()
+    db = [SAMPLE_RATE * t for t in (1, 3, 5, 7)]
+    panel.set_track("/songs/A.mp3", bpm=120.0, key="C maj", downbeats=db)
+    panel.set_cue(6.4)                  # snaps to 7.0
+    assert abs(panel.raw_cue - 6.4) < 0.01, f"raw cue should stay 6.4, got {panel.raw_cue}"
+    assert abs(panel.cue - 7.0) < 0.01, f"snapped cue should be 7.0, got {panel.cue}"
+    print(f"  raw_cue={panel.raw_cue:.2f}s (backspin), cue={panel.cue:.2f}s [bar] (mix)")
+
+    # Default 0:00 cue: raw stays 0.0 even though the mix snaps to the first downbeat.
+    panel.set_track("/songs/B.mp3", bpm=120.0, key="C maj", downbeats=db)
+    assert panel.raw_cue == 0.0, f"default raw cue should be 0.0, got {panel.raw_cue}"
+    assert abs(panel.cue - 1.0) < 0.01, f"default mix cue should snap to 1.0, got {panel.cue}"
+    print(f"  default: raw_cue=0.00s (backspin starts at track start), cue={panel.cue:.2f}s [bar]")
+
+    # Re-N on the same song preserves the raw cue (and thus the snapped one).
+    panel.set_cue(6.4)
+    panel.set_track("/songs/B.mp3", bpm=120.0, key="C maj", downbeats=db)
+    assert abs(panel.raw_cue - 6.4) < 0.01, f"re-N lost raw cue: {panel.raw_cue}"
+    print("  PASS: raw cue tracks the typed value while mix cue snaps; survives re-N")
+
+
 if __name__ == "__main__":
     test_n_on_different_song_resets_cue()
     test_re_n_on_same_song_keeps_cue()
     test_new_song_no_downbeats()
+    test_raw_cue_diverges_from_snapped()
     print("\nAll cue-reset tests passed.")

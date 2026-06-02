@@ -125,6 +125,10 @@ class NextTrackPanel(Static):
         self._bpm: float = 0.0
         self._key: str = ""
         self._cue: float = 0.0
+        # Raw (unsnapped) cue: 0.0 or exactly what the user typed. The backspin
+        # transition starts the next track from here; _cue holds the bar-snapped
+        # version that the Prepare/Mix crossfade uses for bar alignment.
+        self._cue_raw: float = 0.0
         self._fade: float = 16.0
         self._restore: float = 30.0
         self._status: str = ""
@@ -150,10 +154,13 @@ class NextTrackPanel(Static):
         if path_changed:
             self.set_cue(0.0)
         else:
-            self.set_cue(self._cue)
+            # Re-snap from the user's raw cue (not the already-snapped value), so a
+            # re-queue of the same song preserves the exact backspin start point.
+            self.set_cue(self._cue_raw)
 
     def set_cue(self, seconds: float):
         target = max(0.0, seconds)
+        self._cue_raw = target
         if self._downbeats:
             target_sample = int(target * SAMPLE_RATE)
             nearest = min(self._downbeats, key=lambda d: abs(d - target_sample))
@@ -185,6 +192,11 @@ class NextTrackPanel(Static):
         return self._cue
 
     @property
+    def raw_cue(self) -> float:
+        """Unsnapped cue (0.0 or user-typed). Used by the backspin transition."""
+        return self._cue_raw
+
+    @property
     def cue_snapped(self) -> bool:
         return self._cue_snapped
 
@@ -201,12 +213,19 @@ class NextTrackPanel(Static):
             self.update("NEXT TRACK: \\[none]")
             return
         name = _escape(Path(self._path).name)
-        cue_str = _fmt_time(int(self._cue * SAMPLE_RATE))
-        cue_marker = " \\[bar]" if self._cue_snapped else ""
+        raw_str = _fmt_time(int(self._cue_raw * SAMPLE_RATE))
+        # Cue (raw) drives the backspin; Mix (bar-snapped) drives the crossfade. Only
+        # show the Mix value when it actually snapped to a downbeat (otherwise it
+        # equals the raw cue and the second field is just noise).
+        if self._cue_snapped:
+            mix_str = _fmt_time(int(self._cue * SAMPLE_RATE))
+            cue_field = f"Cue: {raw_str}   Mix: {mix_str} \\[bar]"
+        else:
+            cue_field = f"Cue: {raw_str}"
         bpm_show = self._display_bpm if self._display_bpm is not None else self._bpm
         self.update(
             f"NEXT TRACK: {name}  |  {bpm_show:.1f} BPM  {self._key}\n"
-            f"  Cue: {cue_str}{cue_marker}  Fade: {self._fade:.0f}s  Restore: {self._restore:.0f}s  {self._status}\n"
+            f"  {cue_field}  Fade: {self._fade:.0f}s  Restore: {self._restore:.0f}s  {self._status}\n"
             f"  \\[C] Cue  \\[F] Fade  \\[R] Restore  \\[P] Prepare  \\[M] Mix"
         )
 
@@ -215,6 +234,7 @@ class NextTrackPanel(Static):
         self._display_bpm = None
         self._downbeats = []
         self._cue_snapped = False
+        self._cue_raw = 0.0
         self.update("NEXT TRACK: \\[none]")
 
 
@@ -374,18 +394,25 @@ class AutoMixApp(App):
         Binding("n", "load_next", "-> Next", show=True),
         Binding("p", "prepare_mix", "Prepare", show=True),
         Binding("m", "mix_now", "Mix Now", show=True),
+        Binding("b", "backspin", "Backspin", show=True),
         Binding("c", "set_cue", "Set Cue", show=True),
         Binding("f", "set_fade", "Set Fade", show=True),
         Binding("r", "set_restore", "Restore", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
-    def __init__(self, root_folder: str, library: Dict[str, Dict]):
+    def __init__(self, root_folder: str, library: Dict[str, Dict], backspin_sample: str):
         super().__init__()
         self.root_folder = root_folder
         self.library = library
 
         self.engine = AudioEngine()
+
+        # Backspin transition (B): the SFX one-shot is decoded once at mount into
+        # _backspin_audio so the keypress has no decode hitch. None until loaded
+        # (or if the decode failed, in which case action_backspin reports it).
+        self._backspin_path = backspin_sample
+        self._backspin_audio: Optional[np.ndarray] = None
 
         self._now_path: Optional[str] = None
         self._now_bpm: float = 0.0
@@ -473,6 +500,18 @@ class AutoMixApp(App):
         # Song panel starts empty: songs load only when a subfolder is entered.
         self.query_one("#folder-tree", FolderTree).focus()
         self.set_interval(0.1, self._tick)
+        self._preload_backspin()
+
+    def _preload_backspin(self):
+        """Decode the backspin SFX once in the background so the B keypress is
+        instant. Leaves _backspin_audio as None on failure; action_backspin then
+        reports the sample didn't load."""
+        def _work():
+            try:
+                self._backspin_audio = self.engine.load_audio(self._backspin_path)
+            except Exception:
+                self._backspin_audio = None
+        threading.Thread(target=_work, daemon=True).start()
 
     def _setup_song_table(self):
         t = self.query_one("#song-list", DataTable)
@@ -882,6 +921,116 @@ class AutoMixApp(App):
         )
         self._refresh_match_markers()
         self._pending_now_swap = None
+
+    # ------------------------------------------------------------------
+    # Backspin transition (B)
+    # ------------------------------------------------------------------
+
+    def action_backspin(self):
+        """Backspin/rewind transition: abruptly stop the outgoing track, play the
+        backspin SFX one-shot, then start the queued next track at its natural tempo
+        from its cue point. No crossfade, no rubberband — the SFX is simply prepended
+        to the raw cue audio in one buffer. Requires a RAW next track: a prepared (or
+        being-prepared) buffer is irrelevant to this mechanic, so B is rejected then."""
+        if self.engine.state == State.IDLE:
+            self._status("No track playing — load a track first.")
+            return
+        if not self._next_path:
+            self._status("No next track queued (press N on a song first).")
+            return
+        if self._preparing:
+            self._status("Next track is being prepared — cannot backspin.")
+            return
+        if self._next_prepared is not None:
+            self._status(
+                "Next track is prepared — backspin needs an un-prepared next track "
+                "(press N to re-queue raw)."
+            )
+            return
+        # Blocked mid-transition, mirroring action_mix_now: the engine is crossfading
+        # or running a restoration ramp and slamming a backspin in would fight it.
+        if self.engine.state == State.MIXING:
+            self._status("Mixing the two tracks — cannot backspin yet.")
+            return
+        if self._t_restore_start > 0.0:
+            self._status("Restoring original tempo — cannot backspin yet.")
+            return
+        if self._backspin_audio is None:
+            self._status("Backspin sample still loading / failed to load.")
+            return
+
+        next_path = self._next_path
+        next_bpm = self._next_bpm
+        next_key = self._next_key
+        next_downbeats = list(self._next_downbeats)
+        # Backspin starts from the RAW cue (0:00 or exactly what the user typed) — not
+        # the bar-snapped cue the crossfade uses.
+        cue_sec = self.query_one("#next-track", NextTrackPanel).raw_cue
+        # Defensive: the guards above already require no in-flight prep, but bump the
+        # epoch so any worker that races in is orphaned (now-playing is changing).
+        self._prep_epoch += 1
+        self._status(f"Backspin → {Path(next_path).name}...")
+
+        def _work():
+            try:
+                audio = self.engine.load_audio(next_path)
+                cue_sample = int(cue_sec * SAMPLE_RATE)
+                combined = np.concatenate(
+                    [self._backspin_audio, audio[cue_sample:]], axis=0
+                )
+                self.call_from_thread(
+                    self._apply_backspin,
+                    combined, next_path, next_bpm, next_key, next_downbeats, cue_sample,
+                )
+            except Exception as exc:
+                self.call_from_thread(self._status, f"Backspin error: {exc}")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _apply_backspin(
+        self,
+        combined: np.ndarray,
+        next_path: str,
+        next_bpm: float,
+        next_key: str,
+        next_downbeats: List[int],
+        cue_sample: int,
+    ) -> None:
+        """UI-thread completion of the backspin: play the [SFX + cue audio] buffer and
+        promote the next track to now-playing. The engine was PLAYING and stays PLAYING
+        (play() just swaps _now_audio), so _tick's MIXING→PLAYING / →IDLE detectors do
+        not fire — no spurious restoration ramp or _handle_track_finished."""
+        self.engine.play(combined)
+
+        self._now_path = next_path
+        self._now_bpm = next_bpm
+        self._now_key = next_key
+        # The SFX of length L is prepended and the track is cut at cue_sample, so a
+        # downbeat at absolute index d lands at engine position L + (d - cue_sample).
+        # Offsetting keeps a subsequent bar-aligned mix lined up.
+        offset = len(self._backspin_audio) - cue_sample
+        self._now_downbeats = [d + offset for d in next_downbeats if d >= cue_sample]
+
+        # Plays at its natural tempo — no rate ramp, nothing to restore (like a SKIP).
+        self._restore_from_bpm = 0.0
+        self._restore_to_bpm = 0.0
+        self._t_restore_start = 0.0
+        self._mix_scheduled = False
+        self._pending_now_swap = None
+
+        # The NEXT slot is consumed.
+        self.query_one("#next-track", NextTrackPanel).clear()
+        self._next_path = None
+        self._next_bpm = 0.0
+        self._next_key = ""
+        self._next_downbeats = []
+        self._next_prepared = None
+        self._next_plan = None
+
+        # Abrupt cut, not a crossfade — no mix_from on the panel.
+        self.query_one("#now-playing", NowPlayingPanel).set_track(next_path, next_bpm, next_key)
+        self._refresh_match_markers()
+        self._status(f"Backspin → {Path(next_path).name}")
 
     def _handle_track_finished(self) -> None:
         """Reset app state when the now-playing track ends naturally (engine went

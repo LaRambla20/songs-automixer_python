@@ -1,5 +1,6 @@
 import sys
 import os
+import argparse
 
 
 RUBBERBAND_MISSING_MSG = """\
@@ -14,16 +15,47 @@ Install:
   macOS:   brew install rubberband
 """
 
+# Backspin transition SFX shipped with the repo, under samples/.
+DEFAULT_BACKSPIN_SAMPLE = "top_DJ_Rewind_SFX_10.mp3"
+
+
+def _resolve_backspin_sample(value: str) -> str:
+    """A bare filename (no path separators) is looked up inside the bundled
+    samples/ folder; an explicit relative/absolute path is used as-is."""
+    if os.path.dirname(value):
+        return os.path.abspath(value)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "samples", value)
+
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python main.py <music_folder>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        prog="main.py", description="AutoMix - terminal DJ auto-mixer"
+    )
+    parser.add_argument("music_folder", help="Folder of audio files to browse and mix")
+    parser.add_argument(
+        "--backspin",
+        default=DEFAULT_BACKSPIN_SAMPLE,
+        metavar="SAMPLE",
+        help=(
+            "Backspin/rewind SFX one-shot for the B transition. A bare filename is "
+            "resolved inside samples/; a path is used as-is. "
+            f"(default: samples/{DEFAULT_BACKSPIN_SAMPLE})"
+        ),
+    )
+    args = parser.parse_args()
 
-    root = os.path.abspath(sys.argv[1])
+    root = os.path.abspath(args.music_folder)
     if not os.path.isdir(root):
         print(f"Error: '{root}' is not a directory")
         sys.exit(1)
+
+    backspin_sample = _resolve_backspin_sample(args.backspin)
+    if not os.path.isfile(backspin_sample):
+        sys.stderr.write(
+            f"ERROR: backspin sample not found: {backspin_sample}\n"
+            "Pass an existing file with --backspin <path>, or place one in samples/.\n"
+        )
+        sys.exit(2)
 
     from automix.stretcher import rubberband_available
     if not rubberband_available():
@@ -50,7 +82,7 @@ def main():
     print(f"\r  Analysis complete - {len(library)} tracks ready.          \n")
 
     from automix.app import AutoMixApp
-    app = AutoMixApp(root, library)
+    app = AutoMixApp(root, library, backspin_sample=backspin_sample)
     app.run()
 
 
