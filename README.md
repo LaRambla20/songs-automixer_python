@@ -112,6 +112,12 @@ When you prepare a mix, AutoMix compares the two tracks' tempos (accounting for 
 
 The `:)` indicator in the song list flags tempo-compatible tracks (within a DJ-style beatmatching range, octave-folded), so you can spot good next-track candidates at a glance — closely matched ones will mix with little or no stretching.
 
+## Roadmap
+
+### Backspin / rewind transition (planned)
+
+A future special transition mode — a DJ-style **backspin / rewind** effect layered into the mix, distinct from the current beat-matched crossfade. The `samples/` folder stages the source SFX for it (vinyl rewind, backspin, and scratch one-shots in `.wav` / `.mp3`). This is not wired into the app yet; when built, it will slot in as a third transition mode alongside the existing **skip** (no stretch) and **stretch** (`rubberband` rate-ramp) paths.
+
 ## Supported Formats
 
 MP3, FLAC, WAV, OGG, M4A, AAC, Opus, WMA, AIFF, and anything else ffmpeg can decode.
