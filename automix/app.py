@@ -226,7 +226,7 @@ class NextTrackPanel(Static):
         self.update(
             f"NEXT TRACK: {name}  |  {bpm_show:.1f} BPM  {self._key}\n"
             f"  {cue_field}  Fade: {self._fade:.0f}s  Restore: {self._restore:.0f}s  {self._status}\n"
-            f"  \\[C] Cue  \\[F] Fade  \\[R] Restore  \\[P] Prepare  \\[M] Mix"
+            f"  \\[C] Cue  \\[F] Fade  \\[R] Restore  \\[P] Prepare  \\[M] Mix  \\[B] Backspin"
         )
 
     def clear(self):
