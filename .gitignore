@@ -1,6 +1,11 @@
 # Music library (large audio files)
 music/
 
+# Sample audio (backspin SFX / cue clips) — keep only the default committed
+samples/*.mp3
+samples/*.wav
+!samples/top_DJ_Rewind_SFX_10.mp3
+
 # Python
 __pycache__/
 *.py[cod]
