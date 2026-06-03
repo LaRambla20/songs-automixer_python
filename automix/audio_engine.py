@@ -7,6 +7,10 @@ from typing import Optional
 SAMPLE_RATE = 44100
 CHANNELS = 2
 BLOCK_SIZE = 2048
+# Master gain ceiling — allows boosting quiet tracks above unity (+6 dB). Output is
+# hard-limited to ±1.0 in the callback so a boosted signal never exceeds full scale
+# at the device (speaker safety).
+MAX_GAIN = 2.0
 
 
 class State(Enum):
@@ -16,7 +20,7 @@ class State(Enum):
 
 
 class AudioEngine:
-    def __init__(self):
+    def __init__(self, device=None):
         self.state = State.IDLE
         self._lock = threading.Lock()
 
@@ -27,12 +31,20 @@ class AudioEngine:
         self._mix_pos: int = 0        # sample index in _next_audio during crossfade
         self._fade_samples: int = 0
         self._paused: bool = False
+        # Master software gain (0.0–1.0), applied to every callback's output. Lets
+        # the keyboard control the level even when the master is pinned to a non-
+        # default device (Windows volume keys only affect the OS default device).
+        self._volume: float = 1.0
         # When set, the callback stays in PLAYING until _position reaches this sample,
         # then transitions to MIXING in the same audio frame. Used for downbeat-aligned
         # mix starts; None for immediate mixing.
         self._pending_mix_at: Optional[int] = None
 
+        # device=None follows the OS default output; an explicit index pins the
+        # master to a chosen device (e.g. the speakers / a mixer via the AUX jack),
+        # independent of the flaky Windows default.
         self._stream = sd.OutputStream(
+            device=device,
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype="float32",
@@ -52,6 +64,16 @@ class AudioEngine:
     @property
     def paused(self) -> bool:
         return self._paused
+
+    @property
+    def volume(self) -> float:
+        return self._volume
+
+    def set_volume(self, v: float) -> None:
+        """Set master gain, clamped to [0.0, MAX_GAIN]. Above 1.0 boosts quiet
+        material; the callback hard-limits the result to ±1.0 (speaker safety)."""
+        with self._lock:
+            self._volume = max(0.0, min(MAX_GAIN, v))
 
     @property
     def duration(self) -> int:
@@ -141,6 +163,14 @@ class AudioEngine:
                 self._fill_playing(outdata, frames)
             elif self.state == State.MIXING:
                 self._fill_mixing(outdata, frames)
+            # Master gain, applied once over the filled buffer (covers both the
+            # PLAYING and MIXING fills; the IDLE/paused branch already returned).
+            if self._volume != 1.0:
+                outdata *= self._volume
+                # Boost (>1.0) can push past full scale; hard-limit to ±1.0 so the
+                # device never receives a beyond-full-scale signal (speaker safety).
+                if self._volume > 1.0:
+                    np.clip(outdata, -1.0, 1.0, out=outdata)
 
     def _fill_playing(self, outdata: np.ndarray, frames: int):
         # If a scheduled mix is armed and the trigger lies within this callback's

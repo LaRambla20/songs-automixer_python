@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from automix.audio_engine import AudioEngine, State, SAMPLE_RATE, CHANNELS, BLOCK_SIZE
+from automix.audio_engine import AudioEngine, State, SAMPLE_RATE, CHANNELS, BLOCK_SIZE, MAX_GAIN
 
 
 def make_engine():
@@ -27,6 +27,7 @@ def make_engine():
     eng._fade_samples = 0
     eng._paused = False
     eng._pending_mix_at = None
+    eng._volume = 1.0
     return eng
 
 
@@ -72,6 +73,41 @@ def test_scheduled_start_inside_chunk():
         f"end-of-chunk sample {actual_end} != expected {expected_end}"
     )
     print(f"  PASS scheduled_start_inside_chunk: split correctly at sample 1500")
+
+
+def test_master_volume_scales_output():
+    """set_volume(0.5) halves the callback output; 1.0 leaves it untouched."""
+    eng = make_engine()
+    a = np.full((SAMPLE_RATE, CHANNELS), 0.5, dtype=np.float32)
+    eng.play(a)
+    eng._volume = 0.5
+    out = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+    eng._callback(out, BLOCK_SIZE, None, None)
+    assert np.allclose(out, 0.25), f"gain 0.5 should halve 0.5 -> 0.25, got {out[0,0]}"
+    # clamp behaviour: ceiling is MAX_GAIN (2.0), floor 0.0
+    eng.set_volume(5.0)
+    assert eng.volume == MAX_GAIN, f"should clamp to MAX_GAIN, got {eng.volume}"
+    eng.set_volume(-1.0)
+    assert eng.volume == 0.0
+    print("  PASS master_volume: callback scales by gain, set_volume clamps 0..MAX_GAIN")
+
+
+def test_master_volume_boost_limits_output():
+    """Boost (>1.0) scales quiet material but hard-limits the peak to +-1.0."""
+    eng = make_engine()
+    eng.play(np.full((SAMPLE_RATE, CHANNELS), 0.4, dtype=np.float32))
+    eng._volume = 2.0
+    out = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+    eng._callback(out, BLOCK_SIZE, None, None)
+    assert np.allclose(out, 0.8), f"0.4 * 2.0 should be 0.8 (no clip), got {out[0,0]}"
+    # A signal that would exceed full scale is clamped, not amplified past 1.0.
+    eng2 = make_engine()
+    eng2.play(np.full((SAMPLE_RATE, CHANNELS), 0.8, dtype=np.float32))
+    eng2._volume = 2.0
+    out2 = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+    eng2._callback(out2, BLOCK_SIZE, None, None)
+    assert np.allclose(out2, 1.0), f"0.8 * 2.0 must hard-limit to 1.0, got {out2[0,0]}"
+    print("  PASS master_volume boost: lifts quiet audio, hard-limits peaks to +-1.0")
 
 
 def test_immediate_start_unchanged():
@@ -120,4 +156,6 @@ if __name__ == "__main__":
     test_scheduled_in_the_past()
     test_no_split_when_trigger_after_chunk()
     test_scheduled_start_inside_chunk()
+    test_master_volume_scales_output()
+    test_master_volume_boost_limits_output()
     print("\nAll engine tests passed.")

@@ -15,9 +15,15 @@ from textual.widgets import DataTable, Footer, Header, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from .audio_engine import AudioEngine, State, SAMPLE_RATE
+from .cue_player import CuePlayer
 from .analyzer import SUPPORTED_EXTENSIONS, empty_record
 from .stretcher import make_transition_buffer
 from .transition import plan_transition, tempo_compatible, TransitionPlan
+
+# Seek step for the cue/PFL preview ([ / ] keys).
+CUE_SEEK_SECONDS = 5.0
+# Volume step per keypress (-/+ master, 9/0 cue), as a fraction of full scale.
+VOLUME_STEP = 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +92,7 @@ class NowPlayingPanel(Static):
         current_bpm: Optional[float] = None,
         mix_position: Optional[int] = None,
         mix_duration: Optional[int] = None,
+        master_vol: Optional[float] = None,
     ):
         if self._path is None:
             self.update("NOW PLAYING: \\[no track loaded]")
@@ -94,6 +101,10 @@ class NowPlayingPanel(Static):
         if self._mix_from:
             name = f"{_escape(self._mix_from)} → {name}"
         bpm = current_bpm if current_bpm is not None else self._bpm
+        if master_vol is not None:
+            vol_str = f"  |  Vol {round(master_vol * 100)}%" + (" (boost)" if master_vol > 1.0 else "")
+        else:
+            vol_str = ""
         # During a crossfade, show two bars side by side — the outgoing track
         # (left of the arrow) and the incoming track (right) — mirroring the
         # "outgoing → incoming" name line. Otherwise a single full-width bar.
@@ -104,7 +115,7 @@ class NowPlayingPanel(Static):
         else:
             time_line = f"  {_progress_segment(position, duration, 32)}"
         lines = [
-            f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}",
+            f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}{vol_str}",
             time_line,
         ]
         if self._phase:
@@ -138,6 +149,19 @@ class NextTrackPanel(Static):
         # bar alignment.
         self._downbeats: List[int] = []
         self._cue_snapped: bool = False
+        # PFL pre-listen state, driven by _tick from the CuePlayer. When playing,
+        # _render appends a live "♪ CUE  pos / dur  [bar]" line.
+        self._cue_playing: bool = False
+        self._cue_pos: float = 0.0
+        self._cue_dur: float = 0.0
+        self._cue_vol: float = 1.0
+
+    def set_cue_state(self, playing: bool, pos: float, dur: float, vol: float = 1.0) -> None:
+        self._cue_playing = playing
+        self._cue_pos = pos
+        self._cue_dur = dur
+        self._cue_vol = vol
+        self._render()
 
     def set_track(self, path: str, bpm: float, key: str, downbeats: Optional[List[int]] = None):
         # Cue points are track-specific; carrying the previous track's cue across
@@ -223,11 +247,17 @@ class NextTrackPanel(Static):
         else:
             cue_field = f"Cue: {raw_str}"
         bpm_show = self._display_bpm if self._display_bpm is not None else self._bpm
-        self.update(
-            f"NEXT TRACK: {name}  |  {bpm_show:.1f} BPM  {self._key}\n"
-            f"  {cue_field}  Fade: {self._fade:.0f}s  Restore: {self._restore:.0f}s  {self._status}\n"
-            f"  \\[C] Cue  \\[F] Fade  \\[R] Restore  \\[P] Prepare  \\[M] Mix  \\[B] Backspin"
-        )
+        lines = [
+            f"NEXT TRACK: {name}  |  {bpm_show:.1f} BPM  {self._key}",
+            f"  {cue_field}  Fade: {self._fade:.0f}s  Restore: {self._restore:.0f}s  {self._status}",
+            "  \\[C] Cue  \\[F] Fade  \\[R] Restore  \\[P] Prepare  \\[M] Mix  \\[B] Backspin  \\[L] Listen",
+        ]
+        if self._cue_playing:
+            seg = _progress_segment(
+                int(self._cue_pos * SAMPLE_RATE), int(self._cue_dur * SAMPLE_RATE), 18
+            )
+            lines.append(f"  ♪ CUE  {seg}  vol {round(self._cue_vol * 100)}%  (\\[ / ] seek)")
+        self.update("\n".join(lines))
 
     def clear(self):
         self._path = None
@@ -235,6 +265,7 @@ class NextTrackPanel(Static):
         self._downbeats = []
         self._cue_snapped = False
         self._cue_raw = 0.0
+        self._cue_playing = False
         self.update("NEXT TRACK: \\[none]")
 
 
@@ -373,7 +404,7 @@ class AutoMixApp(App):
     #next-track {
         border: solid #cccc00;
         color: #cccc00;
-        height: 5;
+        height: 6;
         padding: 0 1;
     }
     #status-bar {
@@ -395,18 +426,46 @@ class AutoMixApp(App):
         Binding("p", "prepare_mix", "Prepare", show=True),
         Binding("m", "mix_now", "Mix Now", show=True),
         Binding("b", "backspin", "Backspin", show=True),
+        Binding("l", "cue_toggle", "Cue (PFL)", show=True),
         Binding("c", "set_cue", "Set Cue", show=True),
         Binding("f", "set_fade", "Set Fade", show=True),
         Binding("r", "set_restore", "Restore", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
-    def __init__(self, root_folder: str, library: Dict[str, Dict], backspin_sample: str):
+    def __init__(
+        self,
+        root_folder: str,
+        library: Dict[str, Dict],
+        backspin_sample: str,
+        cue_device=None,
+        main_device=None,
+    ):
         super().__init__()
         self.root_folder = root_folder
         self.library = library
 
-        self.engine = AudioEngine()
+        # Pin the master output to an explicit device when given (speakers, or a
+        # mixer via the AUX jack); None follows the OS default.
+        self._main_device = main_device
+        self.engine = AudioEngine(device=main_device)
+
+        # Pre-listen ("PFL") cue: an independent second output stream on a
+        # separate device (USB-C / Bluetooth headphones) for auditioning the
+        # queued NEXT track while the master mix plays on the speakers. None when
+        # --headphones-device was not passed (feature dormant) or the device failed
+        # to open. Opened at mount so a bad device surfaces immediately.
+        self._cue_device = cue_device
+        self._cue: Optional[CuePlayer] = None
+        # Mirrors _prep_epoch: bumped on every cue start/stop and whenever the
+        # NEXT slot changes, so a stale decode worker discards its buffer instead
+        # of auditioning a track that is no longer "next".
+        self._cue_epoch: int = 0
+        # True between the L keypress and the cue decode landing — lets a second L
+        # during the decode read as "stop" rather than launching a second decode.
+        self._cue_loading: bool = False
+        # One-shot guard so a lost cue device only prints its error once.
+        self._cue_dead_reported: bool = False
 
         # Backspin transition (B): the SFX one-shot is decoded once at mount into
         # _backspin_audio so the keypress has no decode hitch. None until loaded
@@ -501,6 +560,18 @@ class AutoMixApp(App):
         self.query_one("#folder-tree", FolderTree).focus()
         self.set_interval(0.1, self._tick)
         self._preload_backspin()
+        self._open_cue_device()
+
+    def _open_cue_device(self):
+        """Open the PFL cue stream if --headphones-device was supplied. Failure is
+        non-fatal: the feature stays dormant and the L keypress reports it."""
+        if self._cue_device is None:
+            return
+        try:
+            self._cue = CuePlayer(self._cue_device)
+        except Exception as exc:
+            self._cue = None
+            self._status(f"Cue device failed to open ({exc}); cueing disabled.")
 
     def _preload_backspin(self):
         """Decode the backspin SFX once in the background so the B keypress is
@@ -689,6 +760,8 @@ class AutoMixApp(App):
         if path == self._next_path:
             self._status(f"{Path(path).name} is already queued as NEXT TRACK")
             return
+        # The thing being auditioned is changing — stop the cue (Q7 lifecycle).
+        self._stop_cue()
         rec = self.library.get(path, empty_record())
         bpm, key = rec["bpm"], rec["key"]
         # Bump epoch so any in-flight prep worker for the previous track will
@@ -883,7 +956,9 @@ class AutoMixApp(App):
         # Snapshot the incoming track's metadata for the now-playing swap.
         swap = (self._next_path, self._next_bpm, self._next_key, list(self._next_downbeats))
 
-        # The NEXT slot is committed — clear it regardless of immediate/deferred.
+        # The NEXT slot is committed — clear it regardless of immediate/deferred,
+        # and stop any cue preview of it (Q7 lifecycle).
+        self._stop_cue()
         self.query_one("#next-track", NextTrackPanel).clear()
         self._next_path = None
         self._next_downbeats = []
@@ -1018,7 +1093,8 @@ class AutoMixApp(App):
         self._mix_scheduled = False
         self._pending_now_swap = None
 
-        # The NEXT slot is consumed.
+        # The NEXT slot is consumed — stop any cue preview of it (Q7 lifecycle).
+        self._stop_cue()
         self.query_one("#next-track", NextTrackPanel).clear()
         self._next_path = None
         self._next_bpm = 0.0
@@ -1031,6 +1107,72 @@ class AutoMixApp(App):
         self.query_one("#now-playing", NowPlayingPanel).set_track(next_path, next_bpm, next_key)
         self._refresh_match_markers()
         self._status(f"Backspin → {Path(next_path).name}")
+
+    # ------------------------------------------------------------------
+    # Pre-listen cue / PFL (L, [ , ])
+    # ------------------------------------------------------------------
+
+    def _stop_cue(self) -> None:
+        """Stop any active cue preview and orphan any in-flight cue decode. Safe
+        to call when no cue device is configured. Bumping the epoch makes a
+        decode worker discard its buffer instead of auditioning a stale track."""
+        self._cue_epoch += 1
+        self._cue_loading = False
+        if self._cue is not None:
+            self._cue.stop()
+
+    def action_cue_toggle(self) -> None:
+        """L: toggle pre-listening the queued NEXT track in the cue headphones.
+        Independent of the master state machine — allowed whatever the engine is
+        doing (the whole point is cueing the next track over the current mix).
+        Stopped → decode + play from the RAW cue (the honest drop point, matching
+        backspin); playing-or-loading → stop. A double-tap during the decode hits
+        the loading branch and stops, bumping the epoch so the worker self-discards."""
+        if self._cue is None:
+            self._status("No cue device — relaunch with --headphones-device <name> to enable PFL.")
+            return
+        if self._cue.is_dead:
+            self._status("Cue device was lost. Restart with the device connected.")
+            return
+        if self._cue.is_playing or self._cue_loading:
+            self._stop_cue()
+            self._status("Cue stopped.")
+            return
+        if not self._next_path:
+            self._status("No next track queued to cue (press N on a song first).")
+            return
+
+        self._cue_epoch += 1
+        my_epoch = self._cue_epoch
+        self._cue_loading = True
+        next_path = self._next_path
+        cue_sec = self.query_one("#next-track", NextTrackPanel).raw_cue
+        self._status(f"Cueing {Path(next_path).name}...")
+
+        def _work():
+            try:
+                audio = self.engine.load_audio(next_path)
+                cue_sample = int(cue_sec * SAMPLE_RATE)
+                buf = audio[cue_sample:]
+                if self._cue_epoch != my_epoch:
+                    return  # superseded by re-press / N / M / B — drop the buffer
+                self.call_from_thread(self._start_cue_playback, buf, next_path, my_epoch)
+            except Exception as exc:
+                if self._cue_epoch == my_epoch:
+                    self._cue_loading = False
+                    self.call_from_thread(self._status, f"Cue error: {exc}")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _start_cue_playback(self, buf: np.ndarray, next_path: str, my_epoch: int) -> None:
+        """UI-thread hand-off for a completed cue decode. A final epoch check
+        closes the race where the NEXT slot changed between the worker's check
+        and this call."""
+        if self._cue is None or self._cue_epoch != my_epoch:
+            return
+        self._cue_loading = False
+        self._cue.play(buf)
+        self._status(f"Cueing {Path(next_path).name}")
 
     def _handle_track_finished(self) -> None:
         """Reset app state when the now-playing track ends naturally (engine went
@@ -1099,6 +1241,41 @@ class AutoMixApp(App):
 
     def on_key(self, event: events.Key):
         if not self._input_mode:
+            # Cue seek: match the RESOLVED character ("[" / "]"), NOT event.key,
+            # so AltGr-composed brackets on non-US layouts (Italian: AltGr+è / +)
+            # work regardless of how the terminal names the physical key. Only
+            # while a cue is actively playing; otherwise fall through to nav.
+            if (
+                event.character in ("[", "]")
+                and self._cue is not None
+                and self._cue.is_playing
+            ):
+                self._cue.seek(
+                    -CUE_SEEK_SECONDS if event.character == "[" else CUE_SEEK_SECONDS
+                )
+                event.prevent_default()
+                event.stop()
+                return
+            # Master volume: , (down) / . (up). Matched on the resolved character
+            # (AltGr/Shift-safe; , and . are adjacent + unshifted on every layout);
+            # allowed in any engine state. The master can boost above 100%.
+            if event.character in (",", "."):
+                step = VOLUME_STEP if event.character == "." else -VOLUME_STEP
+                self.engine.set_volume(self.engine.volume + step)
+                pct = round(self.engine.volume * 100)
+                tail = " (boost)" if self.engine.volume > 1.0 else ""
+                self._status(f"Master volume {pct}%{tail}")
+                event.prevent_default()
+                event.stop()
+                return
+            # Headphone-cue volume: 9 / 0 (only when a cue device is configured).
+            if event.character in ("9", "0") and self._cue is not None:
+                step = VOLUME_STEP if event.character == "0" else -VOLUME_STEP
+                self._cue.set_volume(self._cue.volume + step)
+                self._status(f"Cue volume {round(self._cue.volume * 100)}%")
+                event.prevent_default()
+                event.stop()
+                return
             if event.key == "left" and isinstance(self.focused, DataTable):
                 table = self.query_one("#song-list", DataTable)
                 table.clear()
@@ -1274,7 +1451,24 @@ class AutoMixApp(App):
                 current_bpm,
                 mix_position,
                 mix_duration,
+                master_vol=self.engine.volume,
             )
+
+        # Cue/PFL: surface a lost device once, and feed the live cue line on the
+        # NextTrackPanel. The cue is independent of the master state machine, so
+        # this runs regardless of engine state.
+        if self._cue is not None:
+            if self._cue.is_dead and not self._cue_dead_reported:
+                self._cue_dead_reported = True
+                self._cue_loading = False
+                self._status("Cue device lost — cueing disabled (reconnect and restart).")
+            if self._next_path:
+                self.query_one("#next-track", NextTrackPanel).set_cue_state(
+                    self._cue.is_playing,
+                    self._cue.position_seconds,
+                    self._cue.duration_seconds,
+                    self._cue.volume,
+                )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1359,3 +1553,5 @@ class AutoMixApp(App):
 
     def on_unmount(self):
         self.engine.close()
+        if self._cue is not None:
+            self._cue.close()

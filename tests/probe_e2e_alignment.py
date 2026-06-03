@@ -34,6 +34,7 @@ def make_offline_engine():
     eng._fade_samples = 0
     eng._paused = False
     eng._pending_mix_at = None
+    eng._volume = 1.0
     return eng
 
 

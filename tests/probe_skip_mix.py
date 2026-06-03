@@ -65,6 +65,9 @@ def build_app(plan, cue_snapped=True, now_downbeats=None, next_downbeats=None):
     app._prep_animating = False
     app._prep_progress = 0.0
     app._prep_epoch = 0
+    app._cue = None
+    app._cue_epoch = 0
+    app._cue_loading = False
     app._mix_scheduled = False
     app._pending_now_swap = None
     app._restore_from_bpm = 0.0

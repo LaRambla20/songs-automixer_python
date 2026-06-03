@@ -27,6 +27,7 @@ class FakeEngine:
         self.duration = 0
         self.mix_position = 0
         self.mix_duration = 0
+        self.volume = 1.0
     def stop(self):
         self.state = State.IDLE
 
@@ -58,6 +59,9 @@ def build_app():
     app._prep_from_bpm = 0.0
     app._prep_to_bpm = 0.0
     app._prep_epoch = 0
+    app._cue = None
+    app._cue_epoch = 0
+    app._cue_loading = False
     app._input_mode = ""
     app._input_buf = ""
     app._songs_in_view = []   # _refresh_match_markers iterates this (no-op when empty)
