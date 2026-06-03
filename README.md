@@ -1,6 +1,6 @@
 # AutoMix
 
-A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music folder, browse tracks, and seamlessly crossfade between songs with automatic tempo synchronisation.
+A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music folder, browse tracks, and seamlessly crossfade between songs with automatic tempo synchronisation. Includes DJ-style features: a backspin/rewind transition, separate master/headphone output routing with pre-listen cueing (PFL), and in-app volume control.
 
 ## Requirements
 
@@ -82,6 +82,21 @@ python main.py /path/to/music/folder --backspin /path/to/my_rewind.wav   # or an
 
 The resolved sample must exist or the app exits at startup.
 
+### Output routing & headphone cueing (PFL)
+
+By default the master mix plays on your system's default output device. You can pin it to a specific device and send a **pre-listen cue** (audition the next track in headphones while the mix keeps playing) to a *second* device — the classic DJ setup:
+
+```bash
+python main.py /path/to/music --main-device "Realtek" --headphones-device "B01"
+# master mix -> speakers/mixer ;  cue (press L) -> headphones
+```
+
+- `--main-device "<name>"` pins the **master** output (a name substring; e.g. your speakers, or a mixer/PA via the built-in codec's AUX jack). Omit to follow the OS default.
+- `--headphones-device "<name>"` enables the **cue** and routes it to those headphones. **Must be a separate device — USB-C or Bluetooth**, not the built-in 3.5 mm jack (which shares the speaker codec). Omit to disable cueing.
+- `python main.py --list-devices` prints the output devices you can name (do it with any AUX cable already plugged in).
+
+The master and headphones must resolve to **different** devices — the app refuses to start otherwise (including when `--main-device` is omitted and the OS default happens to be the headphones).
+
 On first launch the app analyses every audio file (BPM + key detection). Results are cached in `~/.automix_cache.json`, so subsequent launches are instant.
 
 While a track is playing, the song list shows a **`:)`** next to every track whose tempo is mixable with it — including half-time and double-time matches (e.g. a 64 BPM track is flagged against a 128 BPM track). It's a quick way to spot good next-track candidates.
@@ -99,9 +114,14 @@ While a track is playing, the song list shows a **`:)`** next to every track who
 | `←` | In song list: clear it and return to the folder tree |
 | `C` | Set cue point on next track (seconds in). The crossfade snaps it to the nearest bar (shown as `Mix:`); the backspin uses the raw value (shown as `Cue:`) |
 | `F` | Set fade duration in seconds (default: 16) |
+| `R` | Set tempo-restore duration in seconds — how long the stretched track takes to ramp back to its own BPM after the fade (default: 30) |
 | `P` | Prepare mix — tempo-matches next track to current BPM (skips stretching when tempos already match) |
 | `M` | Mix now — start the crossfade |
 | `B` | Backspin transition — stop the current track, play a backspin SFX, then drop the next track in from its cue (see below) |
+| `L` | Cue / pre-listen the queued next track in the headphones (needs `--headphones-device`). Press again to stop. See [Output routing & headphone cueing](#output-routing--headphone-cueing-pfl) |
+| `[` / `]` | While cueing: seek the cue ∓5 s |
+| `,` / `.` | Master volume down / up (0–200%; boosts quiet tracks, safely limited) |
+| `9` / `0` | Headphone-cue volume down / up (0–100%) |
 | `Q` | Quit |
 
 ## Auto-Mix Workflow
@@ -133,6 +153,15 @@ It needs a track playing and a next track queued (`N`) that is **raw** — not p
 The next track starts from its **raw** cue — `0:00` by default, or exactly the value you typed with `C` (unlike the crossfade, which snaps the cue to the nearest bar). The panel shows both: `Cue:` is where a backspin starts, `Mix:` is where a crossfade starts.
 
 The SFX defaults to `samples/top_DJ_Rewind_SFX_10.mp3`; override it with `--backspin` (see [Usage](#usage)). The `samples/` folder ships several rewind / backspin / scratch one-shots in `.wav` / `.mp3` to choose from.
+
+## Headphone cueing (PFL) & volume
+
+With a `--headphones-device` configured (see [Output routing & headphone cueing](#output-routing--headphone-cueing-pfl)), press `L` to **pre-listen** the queued next track in your headphones while the master mix keeps playing on the speakers — the standard way to find your drop point before bringing a track in. `L` again stops it; while it's playing, `[` and `]` seek the preview ∓5 s. The cue auditions from the track's **raw** cue point and is independent of the mix engine — you can cue whether the master is playing, paused, or stopped. It auto-stops once you mix, backspin, or queue a different track. If the headphones disconnect mid-set, the cue goes silent and the master keeps playing.
+
+Volume is controlled in-app, so it works even when the master is pinned to a non-default device (where the OS volume keys wouldn't reach it):
+
+- `,` / `.` — **master** volume, 0–200%. Above 100% boosts quiet tracks; the output is hard-limited to full scale so the speakers never receive a beyond-full-scale signal (a loud track pushed past 100% distorts rather than getting louder — boost is headroom for quiet material).
+- `9` / `0` — **headphone-cue** volume, 0–100%.
 
 ## Supported Formats
 
