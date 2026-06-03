@@ -1,6 +1,6 @@
 # AutoMix
 
-A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music folder, browse tracks, and seamlessly crossfade between songs with automatic tempo synchronisation. Includes DJ-style features: a backspin/rewind transition, separate master/headphone output routing with pre-listen cueing (PFL), and in-app volume control.
+A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music folder, browse tracks, and seamlessly crossfade between songs with automatic tempo synchronisation. Includes DJ-style features: live master FX (high-pass / low-pass filter and a tempo-synced gate), a backspin/rewind transition, separate master/headphone output routing with pre-listen cueing (PFL), and in-app volume control.
 
 ## Requirements
 
@@ -122,6 +122,9 @@ While a track is playing, the song list shows a **`:)`** next to every track who
 | `[` / `]` | While cueing: seek the cue ∓5 s |
 | `,` / `.` | Master volume down / up (0–200%; boosts quiet tracks, safely limited) |
 | `9` / `0` | Headphone-cue volume down / up (0–100%) |
+| `G` | Toggle the **master FX gate** on / off (applies the selected effect to the live mix) |
+| `1` / `2` / `3` | Select the FX effect: **high-pass** / **low-pass** / **Trans** (tempo-synced gate) |
+| Mouse wheel | Adjust the selected effect's intensity — **only while the gate is on** (otherwise it scrolls the lists) |
 | `Q` | Quit |
 
 ## Auto-Mix Workflow
@@ -162,6 +165,23 @@ Volume is controlled in-app, so it works even when the master is pinned to a non
 
 - `,` / `.` — **master** volume, 0–200%. Above 100% boosts quiet tracks; the output is hard-limited to full scale so the speakers never receive a beyond-full-scale signal (a loud track pushed past 100% distorts rather than getting louder — boost is headroom for quiet material).
 - `9` / `0` — **headphone-cue** volume, 0–100%.
+
+## Master FX
+
+Three live performance effects you can apply to the master mix in real time. Press **`G`** to toggle the **FX gate** on or off; while it's on, the selected effect is applied to whatever is playing. Pick the effect with **`1` / `2` / `3`**, and dial its intensity with the **mouse wheel** (the wheel only adjusts FX while the gate is on — otherwise it scrolls the folder/song lists as usual). The Now Playing panel shows the active effect and its level (e.g. `FX HPF 45%`).
+
+| Key | Effect | What the wheel does |
+|-----|--------|---------------------|
+| `1` | **High-pass filter** | Sweeps the cutoff up (300 Hz → 4 kHz), progressively thinning the bass and body |
+| `2` | **Low-pass filter** | Sweeps the cutoff down (10 kHz → 250 Hz), progressively muffling the treble |
+| `3` | **Trans** | A hard on/off gate (chopper) locked to the track's tempo; the wheel steps the rate `off → 1/4 → 1/8 → 1/16 → 1/32` note |
+
+Notes:
+
+- **Everything starts at no effect.** A freshly engaged gate is silent until you wheel up; the filters begin at bypass and Trans begins at *off*.
+- **Only one effect is active at a time**, and switching to another resets the previous one back to zero — so re-selecting an effect always starts clean (no sudden re-attack at its old level).
+- The **Trans** gate follows the live tempo, including the tempo-restore ramp after a stretched mix, so the chop stays in time.
+- The gate disengages automatically on **Stop**, and FX apply to the master only — the headphone cue (PFL) stays dry.
 
 ## Supported Formats
 

@@ -4,6 +4,8 @@ import sounddevice as sd
 from enum import Enum
 from typing import Optional
 
+from .fx import MasterFx
+
 SAMPLE_RATE = 44100
 CHANNELS = 2
 BLOCK_SIZE = 2048
@@ -35,6 +37,10 @@ class AudioEngine:
         # the keyboard control the level even when the master is pinned to a non-
         # default device (Windows volume keys only affect the OS default device).
         self._volume: float = 1.0
+        # Master performance FX (HPF / LPF / tempo-synced Trans gate). Mutated only via
+        # the set_fx_* wrappers below (which hold _lock); the callback reads it under the
+        # same lock. Holds its own filter delay state + gate phase across blocks.
+        self._fx = MasterFx(SAMPLE_RATE)
         # When set, the callback stays in PLAYING until _position reaches this sample,
         # then transitions to MIXING in the same audio frame. Used for downbeat-aligned
         # mix starts; None for immediate mixing.
@@ -75,6 +81,29 @@ class AudioEngine:
         with self._lock:
             self._volume = max(0.0, min(MAX_GAIN, v))
 
+    # --- Master FX (lock-guarded passthroughs to the MasterFx processor) ---------
+
+    def set_fx_enabled(self, on: bool) -> None:
+        with self._lock:
+            self._fx.set_enabled(on)
+
+    def set_fx_type(self, fx_type: str) -> None:
+        with self._lock:
+            self._fx.set_type(fx_type)
+
+    def adjust_fx(self, direction: int) -> None:
+        with self._lock:
+            self._fx.adjust(direction)
+
+    def set_fx_tempo(self, bpm: float) -> None:
+        with self._lock:
+            self._fx.set_tempo(bpm)
+
+    def fx_state(self) -> tuple:
+        """(enabled, label) for the UI indicator, e.g. (True, 'HPF 65%')."""
+        with self._lock:
+            return self._fx.enabled, self._fx.describe()
+
     @property
     def duration(self) -> int:
         audio = self._now_audio
@@ -106,6 +135,8 @@ class AudioEngine:
             self._position = 0
             self._paused = False
             self.state = State.PLAYING
+            # Drop filter ringing / gate phase from any previous track.
+            self._fx.reset()
 
     def pause(self):
         with self._lock:
@@ -119,6 +150,7 @@ class AudioEngine:
             self._position = 0
             self._paused = False
             self._pending_mix_at = None
+            self._fx.reset()
 
     def start_mix(
         self,
@@ -163,6 +195,9 @@ class AudioEngine:
                 self._fill_playing(outdata, frames)
             elif self.state == State.MIXING:
                 self._fill_mixing(outdata, frames)
+            # Master performance FX (filter / gate) on the program material, before the
+            # master gain trim. No-op when disabled.
+            self._fx.process(outdata, frames)
             # Master gain, applied once over the filled buffer (covers both the
             # PLAYING and MIXING fills; the IDLE/paused branch already returned).
             if self._volume != 1.0:

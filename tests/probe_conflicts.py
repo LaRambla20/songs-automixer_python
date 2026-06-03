@@ -30,6 +30,12 @@ class FakeEngine:
         self.volume = 1.0
     def stop(self):
         self.state = State.IDLE
+    # Master-FX no-ops (real engine's lock-guarded passthroughs); _tick pushes tempo.
+    def set_fx_tempo(self, bpm): pass
+    def set_fx_enabled(self, on): pass
+    def set_fx_type(self, t): pass
+    def adjust_fx(self, d): pass
+    def fx_state(self): return (False, "HPF 50%")
 
 
 def build_app():
@@ -64,6 +70,7 @@ def build_app():
     app._cue_loading = False
     app._input_mode = ""
     app._input_buf = ""
+    app._fx_enabled = False   # _tick gates the FX tempo push on this; action_stop clears it
     app._songs_in_view = []   # _refresh_match_markers iterates this (no-op when empty)
 
     app._now_panel = FakePanel()

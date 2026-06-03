@@ -20,6 +20,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from automix.analyzer import analyze_file, empty_record
 from automix.audio_engine import AudioEngine, State, SAMPLE_RATE, CHANNELS, BLOCK_SIZE
+from automix.fx import MasterFx
 
 
 def make_offline_engine():
@@ -35,6 +36,7 @@ def make_offline_engine():
     eng._paused = False
     eng._pending_mix_at = None
     eng._volume = 1.0
+    eng._fx = MasterFx(SAMPLE_RATE)
     return eng
 
 

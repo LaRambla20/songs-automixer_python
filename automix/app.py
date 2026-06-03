@@ -68,6 +68,9 @@ class NowPlayingPanel(Static):
         # Set by _tick to surface the current transition phase (MIXING vs
         # tempo-restoration vs idle). Drives the third panel line.
         self._phase: str = ""
+        # Active master-FX label (e.g. "HPF 65%") shown inline on the header line,
+        # or None when the FX gate is off. Set via set_fx().
+        self._fx: Optional[str] = None
 
     def set_track(self, path: str, bpm: float, key: str, mix_from: Optional[str] = None):
         self._path = path
@@ -79,6 +82,9 @@ class NowPlayingPanel(Static):
 
     def set_phase(self, phase: str) -> None:
         self._phase = phase
+
+    def set_fx(self, label: Optional[str]) -> None:
+        self._fx = label
 
     def clear_mix_from(self) -> None:
         """Drop the outgoing-track name (crossfade finished) so the panel shows
@@ -105,6 +111,7 @@ class NowPlayingPanel(Static):
             vol_str = f"  |  Vol {round(master_vol * 100)}%" + (" (boost)" if master_vol > 1.0 else "")
         else:
             vol_str = ""
+        fx_str = f"  |  FX {self._fx}" if self._fx else ""
         # During a crossfade, show two bars side by side — the outgoing track
         # (left of the arrow) and the incoming track (right) — mirroring the
         # "outgoing → incoming" name line. Otherwise a single full-width bar.
@@ -115,7 +122,7 @@ class NowPlayingPanel(Static):
         else:
             time_line = f"  {_progress_segment(position, duration, 32)}"
         lines = [
-            f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}{vol_str}",
+            f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}{vol_str}{fx_str}",
             time_line,
         ]
         if self._phase:
@@ -340,6 +347,35 @@ class FolderTree(Tree):
             event.stop()
             self.app.action_toggle_pause()
 
+    # Mouse wheel adjusts the active FX intensity *only while the gate is engaged*;
+    # otherwise it falls through to the Tree's normal scrolling. Intercepting here
+    # (rather than app-level) is required because a scrollable widget consumes the
+    # scroll event before it can bubble to the App.
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self.app._fx_wheel(-1):
+            event.prevent_default()
+            event.stop()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self.app._fx_wheel(+1):
+            event.prevent_default()
+            event.stop()
+
+
+class SongTable(DataTable):
+    """DataTable subclass that diverts the mouse wheel to the FX intensity while the
+    gate is engaged (same rationale as FolderTree); otherwise scrolls normally."""
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if self.app._fx_wheel(-1):
+            event.prevent_default()
+            event.stop()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self.app._fx_wheel(+1):
+            event.prevent_default()
+            event.stop()
+
 
 # ---------------------------------------------------------------------------
 # Main application
@@ -427,6 +463,7 @@ class AutoMixApp(App):
         Binding("m", "mix_now", "Mix Now", show=True),
         Binding("b", "backspin", "Backspin", show=True),
         Binding("l", "cue_toggle", "Cue (PFL)", show=True),
+        Binding("g", "fx_gate", "FX Gate", show=True),
         Binding("c", "set_cue", "Set Cue", show=True),
         Binding("f", "set_fade", "Set Fade", show=True),
         Binding("r", "set_restore", "Restore", show=True),
@@ -510,6 +547,11 @@ class AutoMixApp(App):
         self._input_mode: str = ""
         self._input_buf: str = ""
 
+        # App-side mirror of the engine FX gate, so the 100 ms _tick only pushes the
+        # live tempo to the engine (a lock acquire) while the gate is actually engaged.
+        # Kept in sync by _toggle_fx_gate / action_stop; the engine remains source of truth.
+        self._fx_enabled: bool = False
+
         # BPM-display animation for the restoration ramp inside the precomputed buffer
         self._restore_from_bpm: float = 0.0
         self._restore_to_bpm: float = 0.0
@@ -543,7 +585,7 @@ class AutoMixApp(App):
                 yield FolderTree(Path(self.root_folder).name, id="folder-tree")
             with Vertical(id="song-panel"):
                 yield Label("SONGS  [Enter] Now Playing  [N] Next Track", id="song-label")
-                yield DataTable(id="song-list")
+                yield SongTable(id="song-list")
         yield NowPlayingPanel(id="now-playing")
         yield NextTrackPanel(id="next-track")
         yield Static("", id="status-bar")
@@ -724,6 +766,69 @@ class AutoMixApp(App):
     def action_toggle_pause(self):
         self.engine.pause()
 
+    # ------------------------------------------------------------------
+    # Master FX (HPF / LPF / Trans gate)
+    # ------------------------------------------------------------------
+
+    def action_fx_gate(self) -> None:
+        """G binding: toggle the master FX gate (shown in the Footer)."""
+        self._toggle_fx_gate()
+
+    def _toggle_fx_gate(self) -> None:
+        enabled, label = self.engine.fx_state()
+        new_state = not enabled
+        self.engine.set_fx_enabled(new_state)
+        self._fx_enabled = new_state
+        if new_state:
+            # Keep the Trans gate synced to whatever is playing right now.
+            self.engine.set_fx_tempo(self._now_bpm)
+            self._status(f"FX gate ON  [{label}]  (1/2/3 pick effect, wheel = intensity)")
+        else:
+            self._status("FX gate OFF")
+        self._refresh_fx_indicator()
+
+    def _select_fx(self, fx_type: str) -> None:
+        self.engine.set_fx_type(fx_type)
+        enabled, label = self.engine.fx_state()
+        state = "ON" if enabled else "off"
+        self._status(f"FX effect: {label}  (gate {state})")
+        self._refresh_fx_indicator()
+
+    def _fx_wheel(self, direction: int) -> bool:
+        """Mouse-wheel hook shared by the app, FolderTree and SongTable. Adjusts the
+        selected FX intensity only while the gate is engaged; returns True if it
+        consumed the scroll (so the caller can suppress normal list scrolling)."""
+        # While typing an inline C/F/R value, leave the wheel alone (the keys are
+        # already suppressed in that mode — keep the two consistent).
+        if self._input_mode:
+            return False
+        if not self._fx_enabled:
+            return False
+        self.engine.adjust_fx(direction)
+        _, label = self.engine.fx_state()
+        self._status(f"FX: {label}")
+        self._refresh_fx_indicator()
+        return True
+
+    def _refresh_fx_indicator(self) -> None:
+        """Push the current FX label onto the NowPlaying panel (None when the gate is
+        off, so the indicator disappears)."""
+        enabled, label = self.engine.fx_state()
+        panel = self.query_one("#now-playing", NowPlayingPanel)
+        panel.set_fx(label if enabled else None)
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        # Reaches the app only over non-scrollable areas (the panels); the Tree and
+        # SongTable handle the wheel themselves. Consume only when FX is engaged.
+        if self._fx_wheel(-1):
+            event.prevent_default()
+            event.stop()
+
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self._fx_wheel(+1):
+            event.prevent_default()
+            event.stop()
+
     def action_stop(self):
         self.engine.stop()
         self._now_path = None
@@ -745,7 +850,12 @@ class AutoMixApp(App):
         self._prep_progress = 0.0
         self._next_prepared = None
         self._next_plan = None
+        # Disengage the FX gate on Stop so the next track doesn't start mid-effect with
+        # no on-screen indicator; the selected effect + intensities are kept for re-arming.
+        self.engine.set_fx_enabled(False)
+        self._fx_enabled = False
         self.query_one("#now-playing", NowPlayingPanel).clear()
+        self._refresh_fx_indicator()
         self._refresh_match_markers()
         if self._next_path is not None:
             panel = self.query_one("#next-track", NextTrackPanel)
@@ -1276,6 +1386,16 @@ class AutoMixApp(App):
                 event.prevent_default()
                 event.stop()
                 return
+            # FX effect select (1/2/3). Matched on the resolved character so digits work
+            # on non-US layouts (Italian needs character matching, like the ,/./9/0
+            # volume keys) — that's why these are NOT BINDINGS. The gate toggle itself is
+            # the "g" Binding (action_fx_gate); "g" is a plain letter, so a binding is
+            # layout-safe and shows in the Footer. Intensity is the mouse wheel (_fx_wheel).
+            if event.character in ("1", "2", "3"):
+                self._select_fx({"1": "hpf", "2": "lpf", "3": "trans"}[event.character])
+                event.prevent_default()
+                event.stop()
+                return
             if event.key == "left" and isinstance(self.focused, DataTable):
                 table = self.query_one("#song-list", DataTable)
                 table.clear()
@@ -1426,6 +1546,12 @@ class AutoMixApp(App):
                     )
             else:
                 current_bpm = None
+
+            # Keep the Trans gate locked to the audio's live tempo (follows the
+            # restoration ramp when one is playing out, else the track's BPM). Only while
+            # the gate is engaged, so an idle gate costs no per-tick lock acquire.
+            if self._fx_enabled:
+                self.engine.set_fx_tempo(current_bpm if current_bpm is not None else self._now_bpm)
 
             # Phase banner reflects whether action_mix_now would be accepted right
             # now; the wording matches the status-line block messages so the user

@@ -13,6 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from automix.audio_engine import AudioEngine, State, SAMPLE_RATE, CHANNELS, BLOCK_SIZE, MAX_GAIN
+from automix.fx import MasterFx
 
 
 def make_engine():
@@ -28,6 +29,7 @@ def make_engine():
     eng._paused = False
     eng._pending_mix_at = None
     eng._volume = 1.0
+    eng._fx = MasterFx(SAMPLE_RATE)   # disabled by default -> callback passes audio through
     return eng
 
 
