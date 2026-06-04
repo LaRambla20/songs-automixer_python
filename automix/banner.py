@@ -35,44 +35,24 @@ _GUTTER = "   "
 _CLOCK_COLOR = "#00aa33"
 
 
-def _crop_frames(frames: List[List[str]]) -> List[List[str]]:
-    """Trim border rows/columns that are blank in EVERY frame.
-
-    Cropping all frames by the same amount keeps an animation registered and
-    equal-size (so the banner never jumps). A row/column is dropped only when it is
-    blank across all frames. Returns the cropped frames in the same order.
-    """
-    frames = [[r for r in f] for f in frames]
-    if not frames or not frames[0]:
-        return frames
-    width = max((len(r) for f in frames for r in f), default=0)
-    frames = [[r.ljust(width) for r in f] for f in frames]
-    n = len(frames[0])
-
-    def row_blank(i):
-        return all(not f[i].strip() for f in frames)
-
-    def col_blank(j):
-        return all(f[i][j] == " " for f in frames for i in range(n))
-
-    top = 0
-    while top < n and row_blank(top):
-        top += 1
-    bot = n
-    while bot > top and row_blank(bot - 1):
-        bot -= 1
+def _crop_grid(grid: List[str]) -> List[str]:
+    """Drop fully-blank border rows/columns so the portrait sits flush."""
+    rows = [r for r in grid]
+    while rows and not rows[0].strip():
+        rows.pop(0)
+    while rows and not rows[-1].strip():
+        rows.pop()
+    if not rows:
+        return rows
+    width = max(len(r) for r in rows)
+    rows = [r.ljust(width) for r in rows]
     left = 0
-    while left < width and col_blank(left):
+    while left < width and all(r[left] == " " for r in rows):
         left += 1
     right = width
-    while right > left and col_blank(right - 1):
+    while right > left and all(r[right - 1] == " " for r in rows):
         right -= 1
-    return [[r[left:right] for r in f[top:bot]] for f in frames]
-
-
-def _crop_grid(grid: List[str]) -> List[str]:
-    """Single-frame crop (thin wrapper over the shared multi-frame crop)."""
-    return _crop_frames([grid])[0]
+    return [r[left:right] for r in rows]
 
 
 def halfblock_rows(grid: List[str], palette: dict) -> List[Text]:
@@ -117,22 +97,17 @@ def _wordmark_rows() -> List[Text]:
     return out
 
 
-def _frames() -> List[List[str]]:
-    """The shared-cropped art frames (all equal-size). One entry for a static image."""
-    return _crop_frames(banner_art.FRAMES)
-
-
-def banner_lines(frame: int = 0) -> List[Text]:
+def banner_lines() -> List[Text]:
     """Compose the wordmark + portrait into one styled ``Text`` per terminal row.
 
     Wordmark on the left, portrait on the right. The wordmark column is padded to
     a constant width on every row (cfonts rstrips its rows to differing lengths),
-    so the portrait stays column-aligned. ``frame`` selects the animation frame
-    (all frames are equal-size, so the banner geometry is identical for each).
+    so the portrait stays column-aligned. An empty ``GRID`` (the ``--no-image``
+    mode) renders the wordmark alone.
     """
-    frames = _frames()
-    # No frames -> wordmark only (the portrait column is omitted entirely).
-    portrait = halfblock_rows(frames[frame % len(frames)], banner_art.PALETTE) if frames else []
+    grid = _crop_grid(banner_art.GRID)
+    # No image -> wordmark only (the portrait column is omitted entirely).
+    portrait = halfblock_rows(grid, banner_art.PALETTE) if grid else []
     words = _wordmark_rows()
     word_w = max((len(w.plain) for w in words), default=0)
     # Banner runs 2 rows taller than the (tallest) content - a blank row above and
@@ -176,30 +151,19 @@ def _add_clock(lines: List[Text], width: int) -> None:
 
 
 class Banner(Static):
-    """Header widget: AUTOMIX wordmark on the left, pixel portrait on the right.
+    """Header widget: AUTOMIX wordmark on the left, static pixel portrait on the right.
 
     Auto-sizes its height to the rendered art, so swapping in art of a different
-    pixel height (via scripts/pixart_image_integrator.py) needs no CSS change. When
-    the baked art has multiple frames (``FRAME_MS > 0``), the portrait cycles through
-    them on a timer to animate; a single frame renders static. A small clock readout
-    ticks in the top-right corner (refreshed once a second).
+    pixel height (via scripts/pixart_image_integrator.py) needs no CSS change. A small
+    clock readout ticks in the top-right corner (refreshed once a second).
     """
-
-    _frame = 0
 
     def on_mount(self) -> None:
         self.styles.height = banner_height()
         self.set_interval(1.0, self.refresh)  # tick the clock
-        frame_ms = getattr(banner_art, "FRAME_MS", 0)
-        if frame_ms > 0 and len(banner_art.FRAMES) > 1:
-            self.set_interval(frame_ms / 1000, self._advance)
-
-    def _advance(self) -> None:
-        self._frame = (self._frame + 1) % len(banner_art.FRAMES)
-        self.refresh()
 
     def render(self) -> Text:  # type: ignore[override]
-        lines = banner_lines(self._frame)
+        lines = banner_lines()
         _add_clock(lines, self.size.width)
         return Text("\n").join(lines)
 

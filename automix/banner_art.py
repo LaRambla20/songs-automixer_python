@@ -2,9 +2,8 @@
 
 WORDMARK: cfonts 'block' AUTOMIX rows (recoloured at render time).
 PALETTE:  letter -> hex colour. ' ' (space) is the transparent background.
-FRAMES:   0 frame(s), each 0 rows x 0 cols of palette letters; 2 px/cell via half-blocks.
-FRAME_MS: ms per frame (0 = static single image; >0 = cycle the frames).
-RECOLOR:  n/a (no image - wordmark only).
+GRID:     12 rows x 13 cols of palette letters; rendered 2 px/cell via half-blocks.
+RECOLOR:  on - hues=green,cyan,yellow,magenta levels=5 (neon UI palette).
 """
 
 WORDMARK = [
@@ -17,10 +16,23 @@ WORDMARK = [
 ]
 
 BACKGROUND = None  # detected background -> transparent in the banner
-FRAME_MS = 0
 
 PALETTE = {
+    'a': '#00cb34',
+    'b': '#cb22aa',
 }
 
-FRAMES = [
+GRID = [
+    '       aa   a',
+    '       aa   a',
+    '       aaaaaa',
+    ' aaa   aabaab',
+    ' aaa   aabaab',
+    'a      aaaaaa',
+    'a   aaaaaaaa ',
+    'a   aaaaaaaa ',
+    'a  aaaaaaaaa ',
+    'a  aaaaaaaaa ',
+    'aa aaaaaaaaa ',
+    ' aaaaaaaaaaa ',
 ]

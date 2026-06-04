@@ -1,24 +1,22 @@
 """Build-time generator for the AutoMix banner art (NOT a runtime dependency).
 
-Reads one or more pixel-art PNGs, samples each down to a small grid (sampling each
-cell centre), keys out the background to transparent, optionally recolours every pixel
-into the UI's neon palette, and writes the pure-data module ``automix/banner_art.py``
-(WORDMARK + PALETTE + FRAMES + FRAME_MS + BACKGROUND).
+Reads a pixel-art PNG, samples it down to a small grid (sampling each cell centre), keys
+out the background to transparent, optionally recolours every pixel into the UI's neon
+palette, and writes the pure-data module ``automix/banner_art.py``
+(WORDMARK + PALETTE + GRID + BACKGROUND).
 
-ONE image = a static banner. SEVERAL images = an animation that cycles through them in
-the given order every ``--frame-ms`` milliseconds. Usually no flags beyond --recolor:
+Usually no flags beyond --recolor:
 
-    pixart_image_integrator.py art.png --recolor                       # static, neon (typical)
-    pixart_image_integrator.py art.png                                 # static, original colours
-    pixart_image_integrator.py a.png b.png c.png --recolor             # animation (1 s/frame)
-    pixart_image_integrator.py a.png b.png --recolor --frame-ms 500    # animation, 0.5 s/frame
-    pixart_image_integrator.py art.png --rows 9 --grid 32 --bg none    # sizing / transparency knobs
+    pixart_image_integrator.py art.png --recolor          # static, neon (typical)
+    pixart_image_integrator.py art.png                    # static, original colours
+    pixart_image_integrator.py --no-image                 # wordmark only, no portrait
+    pixart_image_integrator.py art.png --rows 9 --bg none # sizing / transparency knobs
 
 With ``--grid auto`` (default) the grid is sized backwards from the target banner height
-(``--rows`` character rows). A single image is cropped to its content first; animation
-frames are sampled at one common grid (full canvas) so they stay registered and equal
-size. The background is detected from each image's border (when near-uniform) and keyed
-out within a colour tolerance, which also clears the faint anti-aliasing halo.
+(``--rows`` character rows): the image is cropped to its content first, then sampled.
+Transparency is handled automatically - a PNG with an alpha channel is keyed by its alpha
+(transparent = background); otherwise the background is detected from the image's border
+(when near-uniform) and keyed within a colour tolerance, clearing faint anti-aliasing halo.
 
 Requires Pillow + numpy, used for this build step only. The output module is plain
 strings/dicts, so the running app never imports either.
@@ -75,11 +73,10 @@ HUES = {
 DARKEST_LEVEL = 0.18
 # Default redmean distance under which a colour counts as "the background".
 BG_TOLERANCE = 60.0
-# Non-hex sentinel that keyed background cells are set to, so a shared palette can
-# be built across animation frames whose detected backgrounds differ slightly.
+# Non-hex sentinel that keyed background cells are set to (-> ' ' / transparent).
 BG_MARK = "bg"
-# Default frame interval (ms) for an animation (multiple images).
-FRAME_MS = 1000
+# Alpha below this counts as transparent (background) for PNGs with an alpha channel.
+ALPHA_THRESH = 128
 
 
 # ---------------------------------------------------------------------------
@@ -181,16 +178,37 @@ def detect_background(img: Image.Image, bg_arg: str, tol: float):
     return bg_hex, bbox
 
 
-def sample_grid(img: Image.Image, grid_w: int, grid_h: int) -> List[List[str]]:
-    img = img.convert("RGB")
-    w, h = img.size
+def has_alpha(img: Image.Image) -> bool:
+    """True if the image carries real transparency (alpha channel or palette transparency)."""
+    return img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+
+
+def opaque_bbox(img: Image.Image, thresh: int = ALPHA_THRESH):
+    """Bounding box of pixels with alpha >= ``thresh`` (the visible subject)."""
+    a = np.asarray(img.convert("RGBA"))[..., 3]
+    ys, xs = np.where(a >= thresh)
+    if len(xs) == 0:
+        w, h = img.size
+        return (0, 0, w, h)
+    return (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+
+
+def sample_grid(img: Image.Image, grid_w: int, grid_h: int, key_alpha: bool = False) -> List[List[str]]:
+    """Sample each cell centre to a hex colour. With ``key_alpha``, cells whose alpha is
+    below ``ALPHA_THRESH`` become ``BG_MARK`` (transparent)."""
+    src = img.convert("RGBA") if key_alpha else img.convert("RGB")
+    w, h = src.size
     rows = []
     for gy in range(grid_h):
         row = []
         for gx in range(grid_w):
             sx = int((gx + 0.5) * w / grid_w)
             sy = int((gy + 0.5) * h / grid_h)
-            row.append(hexof(img.getpixel((sx, sy))))
+            px = src.getpixel((sx, sy))
+            if key_alpha and px[3] < ALPHA_THRESH:
+                row.append(BG_MARK)
+            else:
+                row.append(hexof(px))
         rows.append(row)
     return rows
 
@@ -208,15 +226,14 @@ def key_background(hexrows, bg_hex, tol):
 # Generation
 # ---------------------------------------------------------------------------
 
-def build_frames(frames, recolor_hexes):
-    """Map sampled frames -> palette letters with ONE shared palette across all frames.
+def build_data(hexrows, recolor_hexes):
+    """Map a sampled grid -> ``(palette, grid)`` of palette letters.
 
-    ``frames`` is a list of hexrow grids whose background cells are ``BG_MARK``.
-    Returns ``(palette, grids)`` where every frame's letters resolve in the same
-    palette. ``recolor_hexes`` is None (original colours, use SEMANTIC letters) or
-    the theme palette to snap every non-background colour to its nearest entry.
+    ``hexrows`` is a grid whose background cells are ``BG_MARK`` (-> ' '). ``recolor_hexes``
+    is None (original colours, use SEMANTIC letters) or the theme palette to snap every
+    non-background colour to its nearest entry.
     """
-    flat = [c for fr in frames for row in fr for c in row]
+    flat = [c for row in hexrows for c in row]
 
     remap = {}  # original hex -> final hex (after optional recolour)
     if recolor_hexes is not None:
@@ -242,7 +259,7 @@ def build_frames(frames, recolor_hexes):
             letter = next(spare, None)
         if letter is None:
             raise SystemExit(
-                "error: image(s) have more distinct colours than the %d available letters.\n"
+                "error: image has more distinct colours than the %d available letters.\n"
                 "Re-run with --recolor (snaps colours to the neon palette) or a smaller "
                 "--rows / --grid." % len(SPARE)
             )
@@ -250,46 +267,37 @@ def build_frames(frames, recolor_hexes):
         seen_hex[final] = letter
         palette[letter] = final
 
-    grids = [["".join(letter_of[c] for c in row) for row in fr] for fr in frames]
-    return palette, grids
+    grid = ["".join(letter_of[c] for c in row) for row in hexrows]
+    return palette, grid
 
 
-def write_module(out_path, grid_w, grid_h, palette, grids, background, recolor_note, frame_ms):
-    n = len(grids)
+def write_module(out_path, grid_w, grid_h, palette, grid, background, recolor_note):
     with open(out_path, "w", encoding="utf-8") as f:
         f.write('"""AutoMix banner art - GENERATED by scripts/pixart_image_integrator.py. Do not edit by hand.\n\n')
         f.write("WORDMARK: cfonts 'block' AUTOMIX rows (recoloured at render time).\n")
         f.write("PALETTE:  letter -> hex colour. ' ' (space) is the transparent background.\n")
-        f.write("FRAMES:   %d frame(s), each %d rows x %d cols of palette letters; 2 px/cell via half-blocks.\n" % (n, grid_h, grid_w))
-        f.write("FRAME_MS: ms per frame (0 = static single image; >0 = cycle the frames).\n")
+        f.write("GRID:     %d rows x %d cols of palette letters; rendered 2 px/cell via half-blocks.\n" % (grid_h, grid_w))
         f.write("%s\n" % recolor_note)
         f.write('"""\n\n')
         f.write("WORDMARK = [\n")
         for ln in WORDMARK:
             f.write("    %r,\n" % ln)
         f.write("]\n\n")
-        f.write("BACKGROUND = %r  # detected background -> transparent in the banner\n" % background)
-        f.write("FRAME_MS = %d\n\n" % frame_ms)
+        f.write("BACKGROUND = %r  # detected background -> transparent in the banner\n\n" % background)
         f.write("PALETTE = {\n")
         for letter, hexcol in palette.items():
             f.write("    %r: %r,\n" % (letter, hexcol))
         f.write("}\n\n")
-        f.write("FRAMES = [\n")
-        for grid in grids:
-            f.write("    [\n")
-            for row in grid:
-                f.write("        %r,\n" % row)
-            f.write("    ],\n")
+        f.write("GRID = [\n")
+        for row in grid:
+            f.write("    %r,\n" % row)
         f.write("]\n")
 
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Bake pixel art into automix/banner_art.py")
-    ap.add_argument("images", nargs="*", default=[SRC],
-                    help="source pixel-art PNG(s). One = static; several = animation cycling in "
-                         "the given order (default: assets/sample.png)")
-    ap.add_argument("--frame-ms", type=int, default=FRAME_MS,
-                    help="ms per frame when several images are given (default: %d)" % FRAME_MS)
+    ap.add_argument("image", nargs="?", default=SRC,
+                    help="source pixel-art PNG (default: assets/sample.png)")
     ap.add_argument("--out", default=OUT, help="output data module (default: automix/banner_art.py)")
     ap.add_argument("--grid", default="auto",
                     help="'auto' (size from --rows, default), a width 'N', or explicit 'WxH'")
@@ -307,15 +315,14 @@ def main(argv=None) -> None:
     args = ap.parse_args(argv)
 
     if args.no_image:
-        # Wordmark only: empty portrait, empty palette, no animation.
-        write_module(args.out, 0, 0, {}, [], None, "RECOLOR:  n/a (no image - wordmark only).", 0)
+        # Wordmark only: empty portrait, empty palette.
+        write_module(args.out, 0, 0, {}, [], None, "RECOLOR:  n/a (no image - wordmark only).")
         print("wrote", args.out, "(no image - wordmark only)")
         return
 
     tol = args.bg_tolerance
     raw = str(args.grid).lower()
 
-    # Recolour palette (shared across all frames).
     recolor_hexes = None
     recolor_note = "RECOLOR:  off (original colours)."
     if args.recolor:
@@ -326,78 +333,47 @@ def main(argv=None) -> None:
         recolor_hexes = theme_palette(hues, args.levels)
         recolor_note = "RECOLOR:  on - hues=%s levels=%d (neon UI palette)." % (",".join(hues), args.levels)
 
-    images = list(args.images)
-    frames_hexrows = []
-    background = None
+    img = Image.open(args.image)
+    W, H = img.size
 
-    if len(images) == 1:
-        # Static single image: crop to content (auto) and sample to --rows.
-        img = Image.open(images[0])
-        W, H = img.size
-        background, bbox = detect_background(img, args.bg.lower(), tol)
-        print("background: %s  content bbox: %s" % (background, bbox))
-        if raw == "auto":
-            src = img.crop(bbox)
-            bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            grid_h = max(1, args.rows * 2)
-            grid_w = max(1, round(grid_h * bw / bh))
-            print("grid: %dx%d (auto: %d char-rows, content %dx%d)" % (grid_w, grid_h, args.rows, bw, bh))
-        elif "x" in raw:
-            src = img
-            grid_w, grid_h = (int(v) for v in raw.split("x", 1))
-            print("grid: %dx%d (explicit)" % (grid_w, grid_h))
-        else:
-            src = img
-            grid_w = int(raw)
-            grid_h = max(1, round(grid_w * H / W))
-            print("grid: %dx%d (width given, height from aspect)" % (grid_w, grid_h))
-        frames_hexrows.append(key_background(sample_grid(src, grid_w, grid_h), background, tol))
-        frame_ms = 0
+    # Choose the transparency mode: a PNG with alpha is keyed by alpha (when --bg auto);
+    # otherwise the background colour is detected from the border (or forced via --bg).
+    bg_arg = args.bg.lower()
+    key_alpha = bg_arg == "auto" and has_alpha(img)
+    if key_alpha:
+        background, bbox = None, opaque_bbox(img)
+        print("background: alpha-keyed  content bbox: %s" % (bbox,))
     else:
-        # Animation: crop every frame to the UNION of their content regions, then
-        # sample to one common grid sized from --rows, so the SUBJECT fills the banner
-        # height while frames stay registered + equal-size. The union is in RELATIVE
-        # (fractional) coordinates because the frames can have different canvas sizes;
-        # absolute pixel coords would misregister them (and run off smaller canvases).
-        imgs = [Image.open(p) for p in images]
-        det = [detect_background(im, args.bg.lower(), tol) for im in imgs]
-        bgs = [d[0] for d in det]
-        rels = []  # each content bbox as fractions of its own canvas
-        for im, (_bg, bb) in zip(imgs, det):
-            w, h = im.size
-            rels.append((bb[0] / w, bb[1] / h, bb[2] / w, bb[3] / h))
-        fx0 = min(r[0] for r in rels); fy0 = min(r[1] for r in rels)
-        fx1 = max(r[2] for r in rels); fy1 = max(r[3] for r in rels)
-        W0, H0 = imgs[0].size
-        uw, uh = (fx1 - fx0) * W0, (fy1 - fy0) * H0  # union size on the first canvas
-        if "x" in raw:
-            grid_w, grid_h = (int(v) for v in raw.split("x", 1))
-        elif raw == "auto":
-            grid_h = max(1, args.rows * 2)
-            grid_w = max(1, round(grid_h * uw / uh))
-        else:
-            grid_w = int(raw)
-            grid_h = max(1, round(grid_w * uh / uw))
-        background = bgs[0]
-        print("grid: %dx%d  frames: %d  frame-ms: %d  union_frac=(%.2f,%.2f,%.2f,%.2f)"
-              % (grid_w, grid_h, len(images), args.frame_ms, fx0, fy0, fx1, fy1))
-        for p, im, bg in zip(images, imgs, bgs):
-            w, h = im.size
-            box = (round(fx0 * w), round(fy0 * h), round(fx1 * w), round(fy1 * h))
-            frames_hexrows.append(key_background(sample_grid(im.crop(box), grid_w, grid_h), bg, tol))
-            print("  %s  bg=%s  crop=%s" % (p, bg, box))
-        frame_ms = args.frame_ms
+        background, bbox = detect_background(img, bg_arg, tol)
+        print("background: %s  content bbox: %s" % (background, bbox))
 
-    palette, grids = build_frames(frames_hexrows, recolor_hexes)
-    write_module(args.out, grid_w, grid_h, palette, grids, background, recolor_note, frame_ms)
+    if raw == "auto":
+        src = img.crop(bbox)
+        bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        grid_h = max(1, args.rows * 2)
+        grid_w = max(1, round(grid_h * bw / bh))
+        print("grid: %dx%d (auto: %d char-rows, content %dx%d)" % (grid_w, grid_h, args.rows, bw, bh))
+    elif "x" in raw:
+        src = img
+        grid_w, grid_h = (int(v) for v in raw.split("x", 1))
+        print("grid: %dx%d (explicit)" % (grid_w, grid_h))
+    else:
+        src = img
+        grid_w = int(raw)
+        grid_h = max(1, round(grid_w * H / W))
+        print("grid: %dx%d (width given, height from aspect)" % (grid_w, grid_h))
+
+    hexrows = sample_grid(src, grid_w, grid_h, key_alpha=key_alpha)
+    if not key_alpha:
+        hexrows = key_background(hexrows, background, tol)
+
+    palette, grid = build_data(hexrows, recolor_hexes)
+    write_module(args.out, grid_w, grid_h, palette, grid, background, recolor_note)
 
     print("wrote", args.out)
     print("palette letters:", "".join(palette))
-    for i, grid in enumerate(grids):
-        if len(grids) > 1:
-            print("--- frame %d ---" % i)
-        for row in grid:
-            print(row)
+    for row in grid:
+        print(row)
 
 
 if __name__ == "__main__":
