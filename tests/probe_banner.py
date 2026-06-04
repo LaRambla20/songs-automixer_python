@@ -17,8 +17,10 @@ sys.path.insert(0, str(_ROOT / "scripts"))
 from rich.text import Text
 
 from automix import banner_art
+from automix import __author__, __version__
 from automix.banner import (
     _add_clock,
+    _add_signature,
     _crop_grid,
     _wordmark_rows,
     banner_height,
@@ -99,6 +101,21 @@ def test_clock_overlay():
     print("PASS: clock overlay right-aligned (and no-ops when no room)")
 
 
+def test_signature_overlay():
+    lines = banner_lines()
+    _add_signature(lines, 80)
+    # single right-aligned bottom row: "<author> - v<version>", flush to width
+    assert len(lines[-1].plain) == 80, len(lines[-1].plain)
+    assert lines[-1].plain.rstrip().endswith("v" + __version__), repr(lines[-1].plain[-12:])
+    assert __author__ in lines[-1].plain
+    # too-narrow terminal: no room for the signature -> bottom row untouched
+    lines2 = banner_lines()
+    before = lines2[-1].plain
+    _add_signature(lines2, 5)
+    assert lines2[-1].plain == before
+    print("PASS: signature overlay right-aligned (and no-ops when no room)")
+
+
 def test_alpha_keying():
     from PIL import Image
     BG = pixart_image_integrator.BG_MARK
@@ -138,6 +155,7 @@ if __name__ == "__main__":
     test_wordmark_rows_match()
     test_banner_lines_compose()
     test_clock_overlay()
+    test_signature_overlay()
     test_alpha_keying()
     test_theme_palette_levels()
     test_nearest_color_picks_sensible_hue()

@@ -20,7 +20,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.widgets import Static
 
-from . import banner_art
+from . import __author__, __version__, banner_art
 
 UPPER_HALF = "▀"  # the top pixel is fg, the bottom pixel is bg
 LOWER_HALF = "▄"  # the bottom pixel is fg, the top pixel is bg
@@ -150,6 +150,25 @@ def _add_clock(lines: List[Text], width: int) -> None:
     top.append(clock, Style(color=_CLOCK_COLOR))
 
 
+def _add_signature(lines: List[Text], width: int) -> None:
+    """Overlay a right-aligned ``larambla20 - v0.1.0`` signature on the bottom row.
+
+    Replaces ``lines[-1]`` - always blank and full-width (the +2 padding's bottom
+    row) - with a width-wide row whose author/version label is flush to the right
+    border, in the same dim green as the clock. No-op when the terminal is too
+    narrow to hold the label.
+    """
+    if not lines or width <= 0:
+        return
+    text = f"{__author__} – v{__version__}"  # en dash between author and version
+    pad = width - len(text)
+    if pad < 0:
+        return
+    line = Text(" " * pad)
+    line.append(text, Style(color=_CLOCK_COLOR))
+    lines[-1] = line
+
+
 class Banner(Static):
     """Header widget: AUTOMIX wordmark on the left, static pixel portrait on the right.
 
@@ -165,6 +184,7 @@ class Banner(Static):
     def render(self) -> Text:  # type: ignore[override]
         lines = banner_lines()
         _add_clock(lines, self.size.width)
+        _add_signature(lines, self.size.width)
         return Text("\n").join(lines)
 
 
