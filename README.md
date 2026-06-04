@@ -185,7 +185,7 @@ Notes:
 
 ## Banner artwork
 
-The top of the UI shows an **AUTOMIX** wordmark (cfonts "block" font) beside a pixel-art image, both rendered with terminal half-blocks and recoloured into the UI's neon palette. **Any low-resolution, flat-colour pixel-art image works** — a sprite, an icon, a small character. A sample ships in `assets/`; swap in your own anytime.
+The top of the UI shows an **AUTOMIX** wordmark (cfonts "block" font) beside a static pixel-art image, both rendered with terminal half-blocks and recoloured into the UI's neon palette, with a live clock ticking in the top-right corner. **Any low-resolution, flat-colour pixel-art image works** — a sprite, an icon, a small character. A sample ships in `assets/`; swap in your own anytime.
 
 The art is baked into `automix/banner_art.py` by a build-time script, so the running app has no extra dependency. To regenerate it you need **Pillow** (numpy is already installed with the app):
 
@@ -219,7 +219,7 @@ For just the **AUTOMIX wordmark with no portrait**, pass `--no-image`:
 | `--recolor` | Snap every pixel to the neon palette (green / cyan / yellow / magenta at several brightness levels). Omit to keep the image's original colours. |
 | `--no-image` | Wordmark only — bake an empty portrait (no image in the banner). |
 | `--rows N` | Image height in character rows (default: the wordmark's height). Larger = more detail, but a taller banner. |
-| `--bg auto\|none\|#rrggbb` | Background keyed out to transparent. `auto` (default) reads the image border; `none` keeps it opaque; or give an explicit colour. |
+| `--bg auto\|none\|#rrggbb` | Background keyed out to transparent. `auto` (default) keys a PNG's alpha channel when present, otherwise reads the image border; `none` keeps it opaque; or give an explicit colour. |
 | `--grid N` / `--grid WxH` | Override the automatic sizing with an explicit cell width (height from aspect) or full grid. |
 | `--bg-tolerance`, `--hues`, `--levels` | Finer control over background keying and the recolour palette. Run with `--help` for details. |
 
