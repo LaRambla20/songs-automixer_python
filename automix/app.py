@@ -11,9 +11,10 @@ from textual.message import Message
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual import events
-from textual.widgets import DataTable, Footer, Header, Label, Static, Tree
+from textual.widgets import DataTable, Footer, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
+from .banner import Banner
 from .audio_engine import AudioEngine, State, SAMPLE_RATE
 from .cue_player import CuePlayer
 from .analyzer import SUPPORTED_EXTENSIONS, empty_record
@@ -387,9 +388,10 @@ class AutoMixApp(App):
         background: #0d0d0d;
         color: #00ff41;
     }
-    Header {
-        background: #001a00;
+    #banner {
+        background: #0d0d0d;
         color: #00ff41;
+        padding: 0 1;
     }
     #browser {
         height: 1fr;
@@ -578,7 +580,7 @@ class AutoMixApp(App):
     # ------------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Banner(id="banner")
         with Horizontal(id="browser"):
             with Vertical(id="folder-panel"):
                 yield Label("FOLDERS", id="folder-label")

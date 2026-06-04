@@ -183,6 +183,39 @@ Notes:
 - The **Trans** gate follows the live tempo, including the tempo-restore ramp after a stretched mix, so the chop stays in time.
 - The gate disengages automatically on **Stop**, and FX apply to the master only — the headphone cue (PFL) stays dry.
 
+## Banner artwork
+
+The top of the UI shows an **AUTOMIX** wordmark (cfonts "block" font) beside a pixel-art image, both rendered with terminal half-blocks and recoloured into the UI's neon palette. **Any low-resolution, flat-colour pixel-art image works** — a sprite, an icon, a small character. A sample ships in `assets/`; swap in your own anytime.
+
+The art is baked into `automix/banner_art.py` by a build-time script, so the running app has no extra dependency. To regenerate it you need **Pillow** (numpy is already installed with the app):
+
+```bash
+pip install pillow
+```
+
+Drop a PNG into `assets/` and run the integrator:
+
+```bash
+# Linux / macOS
+.venv/bin/python scripts/pixart_image_integrator.py assets/yourart.png --recolor
+```
+```powershell
+# Windows
+.venv\Scripts\python.exe scripts\pixart_image_integrator.py assets\yourart.png --recolor
+```
+
+The banner picks up the new art automatically and resizes to fit. To restore the bundled sample, run the same command with `assets/sample.png`.
+
+| Flag | Purpose |
+|------|---------|
+| `--recolor` | Snap every pixel to the neon palette (green / cyan / yellow / magenta at several brightness levels). Omit to keep the image's original colours. |
+| `--rows N` | Image height in character rows (default: the wordmark's height). Larger = more detail, but a taller banner. |
+| `--bg auto\|none\|#rrggbb` | Background keyed out to transparent. `auto` (default) reads the image border; `none` keeps it opaque; or give an explicit colour. |
+| `--grid N` / `--grid WxH` | Override the automatic sizing with an explicit cell width (height from aspect) or full grid. |
+| `--bg-tolerance`, `--hues`, `--levels` | Finer control over background keying and the recolour palette. Run with `--help` for details. |
+
+**Best results** come from flat-colour pixel art with a clear, uniform background — the script downsamples and snaps colours, so photos or highly detailed images become coarse and abstract. Without `--recolor`, an anti-aliased image may have more colours than the script can letter; it'll tell you to add `--recolor` or reduce the size.
+
 ## Supported Formats
 
 MP3, FLAC, WAV, OGG, M4A, AAC, Opus, WMA, AIFF, and anything else ffmpeg can decode.
