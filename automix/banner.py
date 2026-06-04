@@ -13,6 +13,7 @@ markup), so literal ``[``/``]`` in the art never hit Rich's markup parser.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List
 
 from rich.style import Style
@@ -30,6 +31,8 @@ _WORD_TOP = (0x00, 0xFF, 0x41)
 _WORD_BOT = (0x00, 0x77, 0x22)
 # Gap between the portrait and the wordmark.
 _GUTTER = "   "
+# Dim green for the right-aligned clock readout.
+_CLOCK_COLOR = "#00aa33"
 
 
 def _crop_frames(frames: List[List[str]]) -> List[List[str]]:
@@ -155,19 +158,38 @@ def banner_lines(frame: int = 0) -> List[Text]:
     return lines
 
 
+def _add_clock(lines: List[Text], width: int) -> None:
+    """Overlay a right-aligned ``HH:MM:SS`` clock on the banner's (blank) top row.
+
+    Mutates ``lines[0]`` in place, padding it out to ``width`` so the time sits in
+    the top-right corner. No-op when there is no room (very narrow terminal).
+    """
+    if not lines or width <= 0:
+        return
+    clock = datetime.now().strftime("%H:%M:%S")
+    top = lines[0]
+    pad = width - len(top.plain) - len(clock)
+    if pad < 1:
+        return
+    top.append(" " * pad)
+    top.append(clock, Style(color=_CLOCK_COLOR))
+
+
 class Banner(Static):
     """Header widget: AUTOMIX wordmark on the left, pixel portrait on the right.
 
     Auto-sizes its height to the rendered art, so swapping in art of a different
     pixel height (via scripts/pixart_image_integrator.py) needs no CSS change. When
     the baked art has multiple frames (``FRAME_MS > 0``), the portrait cycles through
-    them on a timer to animate; a single frame renders static.
+    them on a timer to animate; a single frame renders static. A small clock readout
+    ticks in the top-right corner (refreshed once a second).
     """
 
     _frame = 0
 
     def on_mount(self) -> None:
         self.styles.height = banner_height()
+        self.set_interval(1.0, self.refresh)  # tick the clock
         frame_ms = getattr(banner_art, "FRAME_MS", 0)
         if frame_ms > 0 and len(banner_art.FRAMES) > 1:
             self.set_interval(frame_ms / 1000, self._advance)
@@ -177,7 +199,9 @@ class Banner(Static):
         self.refresh()
 
     def render(self) -> Text:  # type: ignore[override]
-        return Text("\n").join(banner_lines(self._frame))
+        lines = banner_lines(self._frame)
+        _add_clock(lines, self.size.width)
+        return Text("\n").join(lines)
 
 
 # Convenience for the headless probe / callers that want the rendered height.

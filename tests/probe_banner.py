@@ -17,6 +17,7 @@ from rich.text import Text
 
 from automix import banner_art
 from automix.banner import (
+    _add_clock,
     _crop_frames,
     _wordmark_rows,
     banner_height,
@@ -109,6 +110,21 @@ def test_banner_lines_compose():
     print(f"PASS: banner composes ({h} rows, {len(banner_art.FRAMES)} frame(s))")
 
 
+def test_clock_overlay():
+    import re
+    lines = banner_lines()
+    _add_clock(lines, 80)
+    top = lines[0].plain
+    assert len(top) == 80, len(top)
+    assert re.search(r"\d\d:\d\d:\d\d$", top), repr(top[-12:])
+    # too-narrow terminal: no room for the clock -> top row untouched
+    lines2 = banner_lines()
+    w = len(lines2[0].plain)
+    _add_clock(lines2, w + 2)
+    assert len(lines2[0].plain) == w
+    print("PASS: clock overlay right-aligned (and no-ops when no room)")
+
+
 def test_theme_palette_levels():
     # one hue, one level -> the full-brightness base
     assert pixart_image_integrator.theme_palette(["green"], 1) == ["#00ff41"]
@@ -139,6 +155,7 @@ if __name__ == "__main__":
     test_halfblock_halves_height()
     test_wordmark_rows_match()
     test_banner_lines_compose()
+    test_clock_overlay()
     test_theme_palette_levels()
     test_nearest_color_picks_sensible_hue()
     print("All banner probes passed")
