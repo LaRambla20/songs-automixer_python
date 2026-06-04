@@ -206,9 +206,28 @@ Drop a PNG into `assets/` and run the integrator:
 
 The banner picks up the new art automatically and resizes to fit. To restore the bundled sample, run the same command with `assets/sample.png`.
 
+### Static image or animation
+
+Pass **one** image for a static portrait, or **several** to make it an **animation** that cycles through them — in the order given — once per second:
+
+```bash
+# Animation: cycles ghost0 -> ghost1 -> ... -> ghost4 -> ghost0, 1 s per frame
+.venv\Scripts\python.exe scripts\pixart_image_integrator.py \
+    assets\ghost0.png assets\ghost1.png assets\ghost2.png assets\ghost3.png assets\ghost4.png --recolor
+```
+
+Use `--frame-ms` to change the speed (e.g. `--frame-ms 500` for 0.5 s). Animation frames are cropped to the union of their content regions and sampled to one common grid, so the subject fills the banner height while the frames stay registered and equal-size. Going back to a single image makes it static again.
+
+For just the **AUTOMIX wordmark with no portrait**, pass `--no-image`:
+
+```powershell
+.venv\Scripts\python.exe scripts\pixart_image_integrator.py --no-image
+```
+
 | Flag | Purpose |
 |------|---------|
 | `--recolor` | Snap every pixel to the neon palette (green / cyan / yellow / magenta at several brightness levels). Omit to keep the image's original colours. |
+| `--frame-ms N` | Milliseconds per frame when several images are given (default: 1000). |
 | `--rows N` | Image height in character rows (default: the wordmark's height). Larger = more detail, but a taller banner. |
 | `--bg auto\|none\|#rrggbb` | Background keyed out to transparent. `auto` (default) reads the image border; `none` keeps it opaque; or give an explicit colour. |
 | `--grid N` / `--grid WxH` | Override the automatic sizing with an explicit cell width (height from aspect) or full grid. |
