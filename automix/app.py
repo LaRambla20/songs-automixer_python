@@ -281,6 +281,22 @@ class NextTrackPanel(Static):
 # Folder tree
 # ---------------------------------------------------------------------------
 
+def _collapse_subtree(node) -> None:
+    """Collapse a node together with all of its expanded descendants.
+
+    Textual's ``node.collapse()`` does NOT cascade, so collapsing an ancestor
+    alone leaves hidden descendants still flagged expanded - their arrows would
+    reappear as a stale 'v' (and their children spill open) the next time the
+    ancestor is re-opened. Collapse depth-first (children before the node) so a
+    re-expand always starts from a fully-collapsed subtree. Safe to call on the
+    root (collapsing descendants only, plus the root itself if expandable)."""
+    for child in node.children:
+        if child.allow_expand and child.is_expanded:
+            _collapse_subtree(child)
+    if node.allow_expand and node.is_expanded:
+        node.collapse()
+
+
 class FolderTree(Tree):
     """Tree subclass that intercepts right-arrow to signal 'enter song browsing'."""
 
@@ -295,15 +311,23 @@ class FolderTree(Tree):
             if node and node.data and isinstance(node.data, str) and os.path.isdir(node.data):
                 event.prevent_default()
                 event.stop()
-                node.expand()
                 # Root just reveals its subfolders and keeps focus on the tree
                 # (root display -> subfolder display), moving the highlight down
                 # onto the first subfolder. A subfolder additionally loads its
                 # songs and hands focus to the song panel.
                 if node is self.root:
+                    node.expand()
                     if node.children:
                         self.cursor_line = node.line + 1
                 else:
+                    # Accordion: collapse any other open sibling first so at most
+                    # one subfolder is open at a time (mirror on_tree_node_selected).
+                    parent = node.parent
+                    if parent is not None:
+                        for sib in parent.children:
+                            if sib is not node and sib.allow_expand and sib.is_expanded:
+                                _collapse_subtree(sib)
+                    node.expand()
                     self.post_message(self.GoToSongs(node.data))
         elif event.key == "left":
             # Go up one display level in a single press: collapse the parent folder
@@ -319,13 +343,13 @@ class FolderTree(Tree):
                 event.prevent_default()
                 event.stop()
                 self.cursor_line = parent.line  # set before collapse: parent.line is stable
-                parent.collapse()
+                _collapse_subtree(parent)
             elif node.allow_expand and node.is_expanded:
                 # Fallback: an expanded node with no displayable parent (the root in
                 # subfolder display) — collapse it in place.
                 event.prevent_default()
                 event.stop()
-                node.collapse()
+                _collapse_subtree(node)
         elif event.key == "up":
             # Once subfolders are shown, up/down navigate only among them — the root
             # is never re-highlighted by navigation. It returns to the highlight only
@@ -347,6 +371,42 @@ class FolderTree(Tree):
             event.prevent_default()
             event.stop()
             self.app.action_toggle_pause()
+
+    async def _on_click(self, event: events.Click) -> None:
+        # A click on the expand arrow (the "toggle" caret) should do exactly what a
+        # click on the folder name does: route every click through select_cursor so
+        # both gestures hit the same on_tree_node_selected flow once. (auto_expand is
+        # off, so select_cursor only posts NodeSelected; the app handler owns the
+        # expand/collapse.)
+        #
+        # prevent_default()/stop() are REQUIRED: Textual dispatches _on_click at every
+        # MRO level (FolderTree, Tree, Widget), so without suppressing the default the
+        # inherited Tree._on_click ALSO fires — its arrow-toggle / second select_cursor
+        # would immediately re-collapse the node we just opened (open-then-close flash).
+        meta = event.style.meta
+        if "line" in meta:
+            event.prevent_default()
+            event.stop()
+            self.cursor_line = meta["line"]
+            await self.run_action("select_cursor")
+
+    def _render_line(self, y, x1, x2, base_style):
+        # Highlight the root row while the mouse is over it, but never let that hover
+        # cascade to the subfolders / indentation guides (the root is an ancestor of
+        # every row, so Textual would otherwise highlight the whole tree). Drive it
+        # from hover_line (a Tree reactive that persists) rather than the root's
+        # transient _hover flag, which _invalidate()/_reset() clears on every
+        # expand/collapse - that made the highlight vanish on click until the mouse
+        # moved again. Write the backing field directly so we don't bump _updates
+        # (which would defeat the per-line render cache); restore it after.
+        root = self.root
+        root_hovered = self.hover_line >= 0 and self.hover_line == root.line
+        saved = root._hover_
+        root._hover_ = root_hovered and y == root.line
+        try:
+            return super()._render_line(y, x1, x2, base_style)
+        finally:
+            root._hover_ = saved
 
     # Mouse wheel adjusts the active FX intensity *only while the gate is engaged*;
     # otherwise it falls through to the Tree's normal scrolling. Intercepting here
@@ -418,6 +478,14 @@ class AutoMixApp(App):
     Tree > .tree--cursor {
         background: #003300;
         color: #00ff41;
+    }
+    Tree > .tree--guides-hover {
+        color: $success-darken-3;
+        text-style: none;
+    }
+    Tree > .tree--guides-selected {
+        color: $success-darken-3;
+        text-style: none;
     }
     DataTable {
         background: #0d0d0d;
@@ -705,29 +773,83 @@ class AutoMixApp(App):
             node.remove_children()
             self._populate_node(node, node.data)
 
+    def _exit_song_browsing(self, node=None) -> None:
+        """Clear the song list and collapse the folder we were browsing (its
+        arrow returns to '>'), returning focus to the tree. Shared by the
+        left-arrow exit and the second-activation toggle in
+        on_tree_node_selected. Never collapses the root here."""
+        table = self.query_one("#song-list", DataTable)
+        table.clear()
+        self._songs_in_view = []
+        tree = self.query_one("#folder-tree", FolderTree)
+        if node is None:
+            node = tree.cursor_node
+        if (
+            node is not None
+            and node is not tree.root
+            and node.allow_expand
+            and node.is_expanded
+        ):
+            _collapse_subtree(node)
+        tree.focus()
+
     def on_tree_node_selected(self, event: Tree.NodeSelected):
-        # Enter / mouse-click. The FolderTree has auto_expand disabled, so we drive
-        # expansion explicitly here. Root just reveals its subfolders and keeps
-        # focus on the tree (root display -> subfolder display); a subfolder expands,
-        # loads its songs, and hands focus to the song panel — same three gestures
-        # (Enter / click / right-arrow) that the GoToSongs contract covers.
+        # Enter / mouse-click (auto_expand is off, so we drive expansion). Acts as
+        # a toggle: a second activation on an already-open folder exits it. Opening
+        # a subfolder collapses any other open sibling (accordion - one open at a
+        # time), so the previously browsed folder's arrow returns to '>'. For the
+        # Enter key this is a no-op in the common case (Enter moves focus to the
+        # next level, so the same node can't be re-activated) and only toggles in
+        # the edge cases where focus stays put (empty root / empty subfolder).
         node = event.node
         if not (node.data and isinstance(node.data, str) and os.path.isdir(node.data)):
             return
         tree = self.query_one("#folder-tree", FolderTree)
-        node.expand()
+
+        if node.is_expanded:
+            # Second activation -> exit.
+            if node is tree.root:
+                table = self.query_one("#song-list", DataTable)
+                table.clear()
+                self._songs_in_view = []
+                # Collapse the whole subtree, not just the root: Textual's collapse
+                # doesn't cascade, so collapsing only the root would leave open
+                # descendants (down arrow / spilled children) when the root reopens.
+                _collapse_subtree(node)  # back to root display
+                tree.cursor_line = 0
+                tree.focus()
+            else:
+                self._exit_song_browsing(node)
+            return
+
+        # First activation -> open.
         if node is tree.root:
+            node.expand()
             # root display -> subfolder display: move the highlight onto the
             # first subfolder so the user is positioned to drill in.
             if node.children:
                 tree.cursor_line = node.line + 1
             return
+
+        # Subfolder: accordion - collapse any other open sibling first.
+        parent = node.parent
+        if parent is not None:
+            for sib in parent.children:
+                if sib is not node and sib.allow_expand and sib.is_expanded:
+                    _collapse_subtree(sib)
+        node.expand()
         self._load_songs_for(node.data)
-        self.query_one("#song-list", DataTable).focus()
+        if self._songs_in_view:
+            self.query_one("#song-list", DataTable).focus()
+        # Empty subfolder: keep focus on the tree (don't jump into an empty table),
+        # so a second Enter/click on the node collapses it.
 
     def on_folder_tree_go_to_songs(self, event: FolderTree.GoToSongs) -> None:
         self._load_songs_for(event.folder)
-        self.query_one("#song-list", DataTable).focus()
+        # Don't jump focus into an empty table (mirror on_tree_node_selected); keep
+        # focus on the tree so a song-less subfolder stays navigable/collapsible.
+        if self._songs_in_view:
+            self.query_one("#song-list", DataTable).focus()
 
     def _load_songs_for(self, folder: str):
         table = self.query_one("#song-list", DataTable)
@@ -1422,23 +1544,10 @@ class AutoMixApp(App):
                 event.stop()
                 return
             if event.key == "left" and isinstance(self.focused, DataTable):
-                table = self.query_one("#song-list", DataTable)
-                table.clear()
-                self._songs_in_view = []
-                tree = self.query_one("#folder-tree", FolderTree)
-                # Collapse the folder we were browsing so its arrow returns to
-                # pointing right — exiting the song list should undo the expansion
-                # that entering it produced. Skip the root (collapsing it would
-                # hide the whole tree).
-                node = tree.cursor_node
-                if (
-                    node is not None
-                    and node is not tree.root
-                    and node.allow_expand
-                    and node.is_expanded
-                ):
-                    node.collapse()
-                tree.focus()
+                # Exit the song list back to the tree, collapsing the folder we
+                # were browsing so its arrow returns to pointing right (shared with
+                # the second-activation toggle in on_tree_node_selected).
+                self._exit_song_browsing()
                 event.prevent_default()
                 event.stop()
             return
