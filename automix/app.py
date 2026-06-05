@@ -428,10 +428,16 @@ class AutoMixApp(App):
         background: #003300;
         color: #00ff41;
     }
+    DataTable > .datatable--hover {
+        background: $boost;
+    }
     DataTable > .datatable--header {
         background: #001a00;
         color: #00cc33;
         text-style: bold;
+    }
+    DataTable > .datatable--header-hover {
+        background: #001a00;
     }
     #now-playing {
         border: solid #00cccc;
@@ -447,13 +453,30 @@ class AutoMixApp(App):
     }
     #status-bar {
         height: 1;
-        background: #001a00;
-        color: #007700;
+        background: #0d0d0d;
+        color: #00aa33;
         padding: 0 1;
     }
     Footer {
-        background: #001a00;
-        color: #005500;
+        background: #0d0d0d;
+        color: #00aa33;
+    }
+    Footer > .footer--key {
+        background: #003300;
+        color: #00aa33;
+        text-style: bold;
+    }
+    Footer > .footer--description {
+        color: #00aa33;
+    }
+    Footer > .footer--highlight {
+        background: #003300;
+        color: #00aa33;
+    }
+    Footer > .footer--highlight-key {
+        background: $secondary 20%;
+        color: #00aa33;
+        text-style: bold;
     }
     """
 
