@@ -355,11 +355,21 @@ def main(argv=None) -> None:
         print("grid: %dx%d (auto: %d char-rows, content %dx%d)" % (grid_w, grid_h, args.rows, bw, bh))
     elif "x" in raw:
         src = img
-        grid_w, grid_h = (int(v) for v in raw.split("x", 1))
+        try:
+            grid_w, grid_h = (int(v) for v in raw.split("x", 1))
+        except ValueError:
+            ap.error("invalid --grid %r: expected 'auto', a width 'N', or 'WxH'" % args.grid)
+        if grid_w < 1 or grid_h < 1:
+            ap.error("invalid --grid %r: width and height must be >= 1" % args.grid)
         print("grid: %dx%d (explicit)" % (grid_w, grid_h))
     else:
         src = img
-        grid_w = int(raw)
+        try:
+            grid_w = int(raw)
+        except ValueError:
+            ap.error("invalid --grid %r: expected 'auto', a width 'N', or 'WxH'" % args.grid)
+        if grid_w < 1:
+            ap.error("invalid --grid %r: width must be >= 1" % args.grid)
         grid_h = max(1, round(grid_w * H / W))
         print("grid: %dx%d (width given, height from aspect)" % (grid_w, grid_h))
 

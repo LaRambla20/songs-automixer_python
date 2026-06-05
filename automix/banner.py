@@ -37,7 +37,7 @@ _CLOCK_COLOR = "#00aa33"
 
 def _crop_grid(grid: List[str]) -> List[str]:
     """Drop fully-blank border rows/columns so the portrait sits flush."""
-    rows = [r for r in grid]
+    rows = list(grid)
     while rows and not rows[0].strip():
         rows.pop(0)
     while rows and not rows[-1].strip():
@@ -151,7 +151,7 @@ def _add_clock(lines: List[Text], width: int) -> None:
 
 
 def _add_signature(lines: List[Text], width: int) -> None:
-    """Overlay a right-aligned ``larambla20 - v0.1.0`` signature on the bottom row.
+    """Overlay a right-aligned ``larambla20 – v0.1.0`` signature on the bottom row.
 
     Replaces ``lines[-1]`` - always blank and full-width (the +2 padding's bottom
     row) - with a width-wide row whose author/version label is flush to the right
