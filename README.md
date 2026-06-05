@@ -103,15 +103,17 @@ While a track is playing, the song list shows a **`:)`** next to every track who
 
 ## Controls
 
+The library browser is a three-level drill-down — **root → subfolders → songs**. Use the arrows to move and drill in/out, or click a folder to open it; only one subfolder stays open at a time.
+
 | Key | Action |
 |-----|--------|
-| `Tab` / arrows | Navigate folder tree and song list |
-| `Enter` | Load selected song as **Now Playing** |
+| `↑` / `↓` | Move within the current folder level or the song list |
+| `→` | Drill in — on the root, reveal its subfolders; on a subfolder, load its songs and jump to the list |
+| `←` | Go back up a level — from the song list to the tree, or collapse the current folder |
+| `Enter` / click | **Folder:** open it (press again to close; opening one subfolder collapses any other). **Song:** load as **Now Playing** — only while stopped (use `N` + `M` to switch during playback) |
 | `N` | Load selected song as **Next Track** |
 | `Space` | Play / Pause |
 | `S` | Stop |
-| `→` | In folder tree: load the folder's songs and jump to the song list |
-| `←` | In song list: clear it and return to the folder tree |
 | `C` | Set cue point on next track (seconds in). The crossfade snaps it to the nearest bar (shown as `Mix:`); the backspin uses the raw value (shown as `Cue:`) |
 | `F` | Set fade duration in seconds (default: 16) |
 | `R` | Set tempo-restore duration in seconds — how long the stretched track takes to ramp back to its own BPM after the fade (default: 30) |
