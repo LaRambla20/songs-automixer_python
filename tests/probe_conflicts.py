@@ -1,5 +1,5 @@
 """Headless tests for the four conflict-handling fixes (A/B/C/D), driving _tick
-with a stubbed engine and fake panels â€” no audio device or Textual mount needed."""
+with a stubbed engine and fake panels -- no audio device or Textual mount needed."""
 
 import sys
 import time
