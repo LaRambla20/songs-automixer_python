@@ -99,6 +99,19 @@ class NowPlayingPanel(Static):
 
     def set_auto(self, on: bool) -> None:
         self._auto = on
+        # Re-render the idle line right away so arming/disarming is visible even with
+        # no track loaded (when _tick doesn't refresh the panel). With a track loaded
+        # the next _tick repaints within 100 ms.
+        if self._path is None:
+            self.update(self._idle_text())
+
+    def _auto_chip(self) -> str:
+        # Deliberate raw Rich markup (like fx_str) — the colour is the banner cat's eye
+        # hex (banner_art PALETTE 'b') so the chip echoes the artwork.
+        return "  |  [#cb22aa]AUTO[/]" if self._auto else ""
+
+    def _idle_text(self) -> str:
+        return f"NOW PLAYING: \\[no track loaded]{self._auto_chip()}"
 
     def clear_mix_from(self) -> None:
         """Drop the outgoing-track name (crossfade finished) so the panel shows
@@ -115,7 +128,7 @@ class NowPlayingPanel(Static):
         master_vol: Optional[float] = None,
     ):
         if self._path is None:
-            self.update("NOW PLAYING: \\[no track loaded]")
+            self.update(self._idle_text())
             return
         name = _escape(Path(self._path).name)
         if self._mix_from:
@@ -126,10 +139,7 @@ class NowPlayingPanel(Static):
         else:
             vol_str = ""
         fx_str = f"  |  FX {self._fx}" if self._fx else ""
-        # Deliberate raw Rich markup (like fx_str) — the track name above is the
-        # only user-supplied string and is already escaped. The colour is the banner
-        # cat's eye hex (banner_art PALETTE 'b') so the chip echoes the artwork.
-        auto_str = "  |  [#cb22aa]AUTO[/]" if self._auto else ""
+        auto_str = self._auto_chip()
         # During a crossfade, show two bars side by side — the outgoing track
         # (left of the arrow) and the incoming track (right) — mirroring the
         # "outgoing → incoming" name line. Otherwise a single full-width bar.
@@ -151,7 +161,9 @@ class NowPlayingPanel(Static):
         self._path = None
         self._mix_from = None
         self._phase = ""
-        self.update("NOW PLAYING: \\[no track loaded]")
+        # Keep the AUTO chip if armed — Stop/track-end clears the track but not the
+        # auto-mix arming.
+        self.update(self._idle_text())
 
 
 class NextTrackPanel(Static):
