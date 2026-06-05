@@ -93,6 +93,8 @@ def build_app(
     app._restore_seconds = 30.0
     app._t_restore_start = t_restore_start
     app._songs_in_view = []
+    app._auto_armed = False
+    app._emergency_fired = False
     app._backspin_audio = (
         np.ones((BACKSPIN_LEN, 2), dtype=np.float32) if backspin_loaded else None
     )

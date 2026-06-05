@@ -71,6 +71,8 @@ def build_app():
     app._input_mode = ""
     app._input_buf = ""
     app._fx_enabled = False   # _tick gates the FX tempo push on this; action_stop clears it
+    app._auto_armed = False   # _tick's emergency detector is gated on this
+    app._emergency_fired = False
     app._songs_in_view = []   # _refresh_match_markers iterates this (no-op when empty)
 
     app._now_panel = FakePanel()

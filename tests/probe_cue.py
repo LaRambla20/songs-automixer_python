@@ -181,6 +181,8 @@ def build_cue_app(has_cue=True, has_next=True, raw_cue=0.0,
     app._cue_dead_reported = False
     app._next_path = "/next.mp3" if has_next else None
     app._input_mode = ""
+    app._auto_armed = False
+    app._emergency_fired = False
     app._statuses = []
     app._status = lambda m: app._statuses.append(m)
     app.call_from_thread = lambda fn, *a: fn(*a)

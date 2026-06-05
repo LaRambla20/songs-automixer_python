@@ -77,6 +77,8 @@ def build_app(plan, cue_snapped=True, now_downbeats=None, next_downbeats=None):
     app._input_mode = ""
     app._input_buf = ""
     app._songs_in_view = []   # _refresh_match_markers iterates this (no-op when empty)
+    app._auto_armed = False
+    app._emergency_fired = False
 
     next_panel = FakeNextPanel(cue_snapped=cue_snapped)
     now_panel = FakeNowPanel()
@@ -164,9 +166,29 @@ def test_prepare_skip_stores_raw_audio():
     print("  PASS prepare skip: raw cue audio stored, no rubberband, status set")
 
 
+def test_mix_rebases_incoming_downbeats_off_cue():
+    # The prepared buffer starts at the cue, so the incoming track's downbeats must be
+    # rebased onto it (index 0 = cue) — else the NEXT mix off this track schedules in the
+    # original sample frame and lands cue_sample late. SKIP = clean shift; STRETCH = drop.
+    skip = plan_transition(128.0, 64.0, 30.0)   # exact half-time -> skip
+    app = build_app(skip, next_downbeats=[0, 44100, 88200])
+    app._next_panel.cue = 1.0                   # cue_sample = 44100
+    AutoMixApp.action_mix_now(app)
+    db = app._pending_now_swap[3]               # bar-aligned -> swap held
+    assert db == [0, 44100], f"skip downbeats not rebased off cue: {db}"
+
+    stretch = plan_transition(128.0, 130.0, 30.0)
+    app = build_app(stretch, next_downbeats=[0, 44100, 88200])
+    AutoMixApp.action_mix_now(app)
+    db = app._pending_now_swap[3] if app._pending_now_swap else app._now_downbeats
+    assert db == [], f"stretch downbeats should be dropped (warped buffer): {db}"
+    print("  PASS downbeat rebase: skip shifts onto the cue, stretch drops (next mix falls back)")
+
+
 if __name__ == "__main__":
     test_skip_mix_arms_no_restore_ramp()
     test_stretch_mix_arms_ramp_from_matched_bpm()
     test_skip_mix_immediate_when_unaligned()
     test_prepare_skip_stores_raw_audio()
+    test_mix_rebases_incoming_downbeats_off_cue()
     print("\nAll skip-mix tests passed.")

@@ -1,6 +1,6 @@
 # AutoMix
 
-A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music folder, browse tracks, and seamlessly crossfade between songs with automatic tempo synchronisation. Includes DJ-style features: live master FX (high-pass / low-pass filter and a tempo-synced gate), a backspin/rewind transition, separate master/headphone output routing with pre-listen cueing (PFL), and in-app volume control.
+A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music folder, browse tracks, and seamlessly crossfade between songs with automatic tempo synchronisation. Includes DJ-style features: live master FX (high-pass / low-pass filter and a tempo-synced gate), a backspin/rewind transition, separate master/headphone output routing with pre-listen cueing (PFL), in-app volume control, and a hands-off **auto-mix** that crossfades into the next track as the current one nears its end.
 
 ## Requirements
 
@@ -120,6 +120,7 @@ The library browser is a three-level drill-down — **root → subfolders → so
 | `P` | Prepare mix — tempo-matches next track to current BPM (skips stretching when tempos already match) |
 | `M` | Mix now — start the crossfade |
 | `B` | Backspin transition — stop the current track, play a backspin SFX, then drop the next track in from its cue (see below) |
+| `A` | Toggle **auto-mix** — automatically crossfade into the next track as the current one nears its end (see below). Off by default; a magenta `AUTO` marker shows when it's armed |
 | `L` | Cue / pre-listen the queued next track in the headphones (needs `--headphones-device`). Press again to stop. See [Output routing & headphone cueing](#output-routing--headphone-cueing-pfl) |
 | `[` / `]` | While cueing: seek the cue ∓5 s |
 | `,` / `.` | Master volume down / up (0–200%; boosts quiet tracks, safely limited) |
@@ -140,6 +141,8 @@ The library browser is a three-level drill-down — **root → subfolders → so
 
 Or, instead of steps 4–6, press `B` for a **backspin transition** — a quick, hard cut with a DJ rewind effect (see below). It needs the next track queued (step 2) but **not** prepared.
 
+To hand the whole thing off, press `A` to arm the [auto-mix](#auto-mix-hands-off) — it triggers the transition for you as each track nears its end, and even picks the next song when nothing is queued.
+
 ## Smart tempo matching
 
 When you prepare a mix, AutoMix compares the two tracks' tempos (accounting for half-time / double-time relationships) and picks the least intrusive transition:
@@ -158,6 +161,18 @@ It needs a track playing and a next track queued (`N`) that is **raw** — not p
 The next track starts from its **raw** cue — `0:00` by default, or exactly the value you typed with `C` (unlike the crossfade, which snaps the cue to the nearest bar). The panel shows both: `Cue:` is where a backspin starts, `Mix:` is where a crossfade starts.
 
 The SFX defaults to `samples/top_DJ_Rewind_SFX_10.mp3`; override it with `--backspin` (see [Usage](#usage)). The `samples/` folder ships several rewind / backspin / scratch one-shots in `.wav` / `.mp3` to choose from.
+
+## Auto-mix (hands-off)
+
+Press **`A`** to arm the auto-mix — a magenta `AUTO` marker appears on the Now Playing panel. While it's armed, AutoMix watches the playing track and, as it enters its **final 10 seconds**, automatically brings in the next track with a 10-second crossfade, so the music never runs out. It adapts to what you've set up:
+
+- **Next track queued and prepared** (`N` then `P`) — does the normal **beat-matched** mix, just triggered for you and timed to land on the bar.
+- **Next track queued but raw** (or still preparing) — mixes it in **as-is** at its natural tempo (no stretching), from its cue point, dropping any half-finished prepare.
+- **Nothing queued** — automatically picks the **next song in the same folder** as the current track (alphabetical order) and mixes it in as-is from the start.
+
+It's **continuous while armed**: once a track is mixed in, AutoMix keeps going and mixes *its* successor when it nears the end — so it can play out a whole folder unattended, like an auto-DJ. It stops automatically at the **last song in a folder** (nothing left to bring in), and you can stop it any time by pressing **`A`** again to disarm. Disarm to deliberately let the final track of a set play out to the end.
+
+Auto-mix sits alongside the manual controls — arm it as a safety net while you line up the next track by hand, or leave it running for a continuous mix.
 
 ## Headphone cueing (PFL) & volume
 

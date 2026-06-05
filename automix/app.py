@@ -25,6 +25,13 @@ from .transition import plan_transition, tempo_compatible, TransitionPlan
 CUE_SEEK_SECONDS = 5.0
 # Volume step per keypress (-/+ master, 9/0 cue), as a fraction of full scale.
 VOLUME_STEP = 0.05
+# Auto/emergency mix: when armed, the playing track auto-mixes into the next one
+# as it enters its final EMERGENCY_SECONDS. That window is also the crossfade
+# budget (the fade is clamped to the audio actually left). EMERGENCY_MIN_FADE is
+# the case-3 bar-align fallback: if waiting for Track A's downbeat would leave
+# less than this much fade, skip alignment and fire immediately.
+EMERGENCY_SECONDS = 10.0
+EMERGENCY_MIN_FADE = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +79,9 @@ class NowPlayingPanel(Static):
         # Active master-FX label (e.g. "HPF 65%") shown inline on the header line,
         # or None when the FX gate is off. Set via set_fx().
         self._fx: Optional[str] = None
+        # Auto/emergency-mix armed flag — drives the magenta "AUTO" chip on the
+        # header line. Set via set_auto().
+        self._auto: bool = False
 
     def set_track(self, path: str, bpm: float, key: str, mix_from: Optional[str] = None):
         self._path = path
@@ -86,6 +96,9 @@ class NowPlayingPanel(Static):
 
     def set_fx(self, label: Optional[str]) -> None:
         self._fx = label
+
+    def set_auto(self, on: bool) -> None:
+        self._auto = on
 
     def clear_mix_from(self) -> None:
         """Drop the outgoing-track name (crossfade finished) so the panel shows
@@ -113,6 +126,10 @@ class NowPlayingPanel(Static):
         else:
             vol_str = ""
         fx_str = f"  |  FX {self._fx}" if self._fx else ""
+        # Deliberate raw Rich markup (like fx_str) — the track name above is the
+        # only user-supplied string and is already escaped. The colour is the banner
+        # cat's eye hex (banner_art PALETTE 'b') so the chip echoes the artwork.
+        auto_str = "  |  [#cb22aa]AUTO[/]" if self._auto else ""
         # During a crossfade, show two bars side by side — the outgoing track
         # (left of the arrow) and the incoming track (right) — mirroring the
         # "outgoing → incoming" name line. Otherwise a single full-width bar.
@@ -123,7 +140,7 @@ class NowPlayingPanel(Static):
         else:
             time_line = f"  {_progress_segment(position, duration, 32)}"
         lines = [
-            f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}{vol_str}{fx_str}",
+            f"NOW PLAYING: {name}  |  {bpm:.1f} BPM  {self._key}{vol_str}{fx_str}{auto_str}",
             time_line,
         ]
         if self._phase:
@@ -556,6 +573,7 @@ class AutoMixApp(App):
         Binding("m", "mix_now", "Mix Now", show=True),
         Binding("b", "backspin", "Backspin", show=True),
         Binding("l", "cue_toggle", "Cue (PFL)", show=True),
+        Binding("a", "toggle_auto", "Auto-Mix", show=True),
         Binding("g", "fx_gate", "FX Gate", show=True),
         Binding("c", "set_cue", "Set Cue", show=True),
         Binding("f", "set_fade", "Set Fade", show=True),
@@ -644,6 +662,14 @@ class AutoMixApp(App):
         # live tempo to the engine (a lock acquire) while the gate is actually engaged.
         # Kept in sync by _toggle_fx_gate / action_stop; the engine remains source of truth.
         self._fx_enabled: bool = False
+
+        # Auto/emergency mix. _auto_armed is the user toggle (A); while armed, _tick's
+        # detector mixes the next track in as the playing one enters its final
+        # EMERGENCY_SECONDS. _emergency_fired is a per-track one-shot so the 100 ms
+        # ticks during the window (and the decode latency) don't re-fire — it is reset
+        # on every now-playing swap so each fresh track gets exactly one arming.
+        self._auto_armed: bool = False
+        self._emergency_fired: bool = False
 
         # BPM-display animation for the restoration ramp inside the precomputed buffer
         self._restore_from_bpm: float = 0.0
@@ -987,6 +1013,7 @@ class AutoMixApp(App):
         self._restore_to_bpm = 0.0
         self._mix_scheduled = False
         self._pending_now_swap = None
+        self._emergency_fired = False
         # Invalidate prep — both any in-flight worker (epoch bump) AND a completed
         # buffer (which was rendered against the now-stopped track's BPM). Without
         # clearing _next_prepared, a later Stop→Enter→M would mix a wrong-tempo
@@ -1198,23 +1225,68 @@ class AutoMixApp(App):
         # precomputed buffer. On a SKIP mix the incoming track plays at its natural
         # tempo throughout (no rate ramp), so leave from/to at 0.0 — this keeps
         # _tick from arming a restoration ramp or overriding the now-playing BPM.
-        if self._next_plan is not None and self._next_plan.skip:
-            self._restore_from_bpm = 0.0
-            self._restore_to_bpm = 0.0
-        else:
-            self._restore_from_bpm = self._next_plan.matched_bpm if self._next_plan else self._now_bpm
-            self._restore_to_bpm = self._next_bpm
-        self._restore_seconds = max(0.5, panel.restore)
-        self._t_restore_start = 0.0   # armed by the MIXING→PLAYING transition in _tick()
-
         skip = self._next_plan is not None and self._next_plan.skip
-        self.engine.start_mix(self._next_prepared, panel.fade, scheduled_start_sample=scheduled)
+        if skip:
+            restore_from = 0.0
+            restore_to = 0.0
+        else:
+            restore_from = self._next_plan.matched_bpm if self._next_plan else self._now_bpm
+            restore_to = self._next_bpm
 
-        # Snapshot the incoming track's metadata for the now-playing swap.
-        swap = (self._next_path, self._next_bpm, self._next_key, list(self._next_downbeats))
+        # Snapshot the incoming track's metadata BEFORE _commit_mix clears the slot.
+        # Downbeats are rebased onto the prepared buffer (index 0 = the cue) so the NEXT
+        # mix off this track schedules in engine coordinates, not the original frame.
+        cue_sample = int(panel.cue * SAMPLE_RATE)
+        swap = (
+            self._next_path, self._next_bpm, self._next_key,
+            self._buffer_downbeats(self._next_plan, cue_sample),
+        )
 
-        # The NEXT slot is committed — clear it regardless of immediate/deferred,
-        # and stop any cue preview of it (Q7 lifecycle).
+        tail = " (no stretch)" if skip else ""
+        base = "Mixing (no bar alignment)" if not panel.cue_snapped else "Mixing"
+        status_deferred = (
+            f"Waiting for downbeat at {_fmt_time(scheduled)}...{tail}"
+            if scheduled is not None else ""
+        )
+        self._commit_mix(
+            self._next_prepared, panel.fade, scheduled, swap,
+            restore_from=restore_from,
+            restore_to=restore_to,
+            restore_seconds=max(0.5, panel.restore),
+            status_immediate=f"{base}...{tail}",
+            status_deferred=status_deferred,
+        )
+
+    def _commit_mix(
+        self,
+        buffer: np.ndarray,
+        fade_seconds: float,
+        scheduled: Optional[int],
+        swap: tuple,
+        *,
+        restore_from: float,
+        restore_to: float,
+        restore_seconds: float,
+        status_immediate: str,
+        status_deferred: str,
+    ) -> None:
+        """Shared commit core for every crossfade (manual M-mix and the auto/emergency
+        mix). Arms the restore-ramp metadata, hands the buffer to the engine, tears down
+        the NEXT slot + cue preview, and performs the now-playing swap — immediately if
+        the mix starts now, or deferred (held in _pending_now_swap) when it is bar-aligned
+        and waiting for a downbeat. Callers snapshot `swap` from the next-track metadata
+        BEFORE calling (this method clears that slot)."""
+        # Restore-ramp display metadata for the rate ramp baked into the buffer; armed
+        # by the MIXING→PLAYING transition in _tick(). 0/0 means no ramp (skip / as-is).
+        self._restore_from_bpm = restore_from
+        self._restore_to_bpm = restore_to
+        self._restore_seconds = restore_seconds
+        self._t_restore_start = 0.0
+
+        self.engine.start_mix(buffer, fade_seconds, scheduled_start_sample=scheduled)
+
+        # The NEXT slot is committed — clear it regardless of immediate/deferred, and
+        # stop any cue preview of it (Q7 lifecycle).
         self._stop_cue()
         self.query_one("#next-track", NextTrackPanel).clear()
         self._next_path = None
@@ -1222,19 +1294,17 @@ class AutoMixApp(App):
         self._next_prepared = None
         self._next_plan = None
 
-        tail = " (no stretch)" if skip else ""
         if scheduled is not None:
             # Deferred (bar-aligned): hold the swap until the crossfade fires so the
             # NowPlaying panel keeps showing the outgoing track during the bar-wait.
             self._pending_now_swap = swap
             self._mix_scheduled = True
-            self._status(f"Waiting for downbeat at {_fmt_time(scheduled)}...{tail}")
+            self._status(status_deferred)
         else:
             # Immediate: engine is already MIXING, so swap the display now.
             self._apply_now_swap(swap)
             self._mix_scheduled = False
-            base = "Mixing (no bar alignment)" if not panel.cue_snapped else "Mixing"
-            self._status(f"{base}...{tail}")
+            self._status(status_immediate)
 
     def _apply_now_swap(self, swap: tuple) -> None:
         """Promote a queued next-track's metadata to now-playing and update the
@@ -1253,6 +1323,216 @@ class AutoMixApp(App):
         )
         self._refresh_match_markers()
         self._pending_now_swap = None
+        # A fresh track is now playing — re-arm the emergency one-shot so it gets its
+        # own final-window mix (covers the deferred-swap path too).
+        self._emergency_fired = False
+
+    def _buffer_downbeats(self, plan: Optional[TransitionPlan], cue_sample: int) -> List[int]:
+        """Rebase the incoming track's absolute downbeats onto its prepared buffer, whose
+        index 0 is the cue — so a subsequent bar-aligned mix off this track schedules in
+        the same coordinates the engine plays in (position 0 = the cue), not the track's
+        original sample frame. A SKIP buffer is the raw cue audio, a clean constant shift
+        (downbeats before the cue dropped). A STRETCH buffer time-warps the audio
+        nonlinearly via the rubberband timemap, so absolute downbeats map to buffer
+        positions by no constant — return [] and let the next mix fall back to immediate
+        (non-aligned) start rather than schedule against warped data. Mirrors the backspin
+        offset (which additionally prepends the SFX)."""
+        if plan is not None and not plan.skip:
+            return []
+        return [d - cue_sample for d in self._next_downbeats if d >= cue_sample]
+
+    # ------------------------------------------------------------------
+    # Auto / emergency mix (A) — auto-mix the next track in the final window
+    # ------------------------------------------------------------------
+
+    def action_toggle_auto(self) -> None:
+        """A binding: arm/disarm the auto/emergency mix. While armed, the playing
+        track auto-mixes into the next one as it enters its final EMERGENCY_SECONDS."""
+        self._auto_armed = not self._auto_armed
+        self.query_one("#now-playing", NowPlayingPanel).set_auto(self._auto_armed)
+        if self._auto_armed:
+            self._status(
+                f"Auto-mix armed - will mix the next track in the final "
+                f"{int(EMERGENCY_SECONDS)} s."
+            )
+        else:
+            self._status("Auto-mix disarmed.")
+
+    def _next_song_in_folder(self, now_path: str) -> Optional[str]:
+        """The next supported audio file after `now_path` within its own folder, in the
+        same sorted order _load_songs_for uses. None when `now_path` is the last song in
+        the folder (or isn't found). Non-recursive — one folder, mirroring the song list."""
+        folder = os.path.dirname(now_path)
+        try:
+            entries = sorted(os.listdir(folder))
+        except (OSError, PermissionError):
+            return None
+        songs = [
+            os.path.join(folder, e)
+            for e in entries
+            if os.path.isfile(os.path.join(folder, e))
+            and Path(e).suffix.lower() in SUPPORTED_EXTENSIONS
+        ]
+        try:
+            idx = songs.index(now_path)
+        except ValueError:
+            return None
+        return songs[idx + 1] if idx + 1 < len(songs) else None
+
+    def _emergency_decision(self) -> Optional[dict]:
+        """Pure classifier for the auto/emergency mix (no side effects, so probe_emergency
+        can assert it directly). Returns None when the detector must stay quiet; otherwise
+        a dict {case, ...}. Guards mirror action_mix_now plus the arm/one-shot state:
+        fire only while armed, PLAYING (not paused), not already mid-/scheduled-transition
+        or restoring, the one-shot unspent, and within the final EMERGENCY_SECONDS."""
+        if not self._auto_armed or self._emergency_fired:
+            return None
+        if self.engine.state != State.PLAYING or self.engine.paused:
+            return None
+        if self._mix_scheduled or self._t_restore_start > 0.0:
+            return None
+        duration = self.engine.duration
+        if duration <= 0:
+            return None
+        remaining = duration - self.engine.position
+        if remaining > EMERGENCY_SECONDS * SAMPLE_RATE:
+            return None
+        # Classify by the NEXT-slot state.
+        if self._next_path is None:
+            source = self._next_song_in_folder(self._now_path) if self._now_path else None
+            return {"case": 4, "source": source, "cue": 0.0}
+        if self._next_prepared is not None:
+            return {"case": 3}
+        panel = self.query_one("#next-track", NextTrackPanel)
+        if self._preparing:
+            return {"case": 2, "source": self._next_path, "cue": panel.raw_cue}
+        return {"case": 1, "source": self._next_path, "cue": panel.raw_cue}
+
+    def _maybe_emergency_mix(self) -> None:
+        """_tick hook: if the detector fires, dispatch the matching case. Claims the
+        one-shot up front so the 100 ms ticks during the decode (and the can't-fire
+        end-of-folder case) don't re-trigger."""
+        d = self._emergency_decision()
+        if d is None:
+            return
+        self._emergency_fired = True
+        case = d["case"]
+
+        if case == 4 and d["source"] is None:
+            # Armed, but the playing song is the last in its folder — nothing to bring in.
+            self._status("Auto-mix: last song in folder - nothing to mix.")
+            return
+
+        if case == 3:
+            self._emergency_commit_prepared()
+            return
+
+        # Cases 1 / 2 / 4 mix the raw track as-is. Case 2 first drops the in-flight prep
+        # (epoch bump orphans the worker, mirroring _mark_stale / action_load_next).
+        if case == 2:
+            self._prep_epoch += 1
+            self._preparing = False
+            self._prep_animating = False
+            self._prep_progress = 0.0
+            self._next_prepared = None
+            self._next_plan = None
+        self._emergency_commit_asis(d["source"], d["cue"], case)
+
+    def _emergency_commit_prepared(self) -> None:
+        """Case 3: crossfade the already-prepared buffer. Bar-aligns to Track A's next
+        downbeat when one falls within the runway AND would still leave >= EMERGENCY_MIN_FADE
+        of fade; else fires immediately. Fade = min(panel.fade, runway) so it stays inside
+        the prepared buffer's constant-rate region (no beat drift) and never outlasts the
+        audio left. Restore ramp arms exactly as in action_mix_now."""
+        panel = self.query_one("#next-track", NextTrackPanel)
+        pos = self.engine.position
+        duration = self.engine.duration
+
+        scheduled: Optional[int] = None
+        if self._now_downbeats and self._next_downbeats and panel.cue_snapped:
+            safety = int(0.1 * SAMPLE_RATE)
+            future = [d for d in self._now_downbeats if d > pos + safety]
+            if future and (duration - future[0]) >= EMERGENCY_MIN_FADE * SAMPLE_RATE:
+                scheduled = future[0]
+
+        runway_end = scheduled if scheduled is not None else pos
+        fade = max(0.5, min(panel.fade, (duration - runway_end) / SAMPLE_RATE))
+
+        skip = self._next_plan is not None and self._next_plan.skip
+        if skip:
+            restore_from = restore_to = 0.0
+        else:
+            restore_from = self._next_plan.matched_bpm if self._next_plan else self._now_bpm
+            restore_to = self._next_bpm
+        cue_sample = int(panel.cue * SAMPLE_RATE)
+        swap = (
+            self._next_path, self._next_bpm, self._next_key,
+            self._buffer_downbeats(self._next_plan, cue_sample),
+        )
+        name = Path(swap[0]).name
+        tail = " (no stretch)" if skip else ""
+        deferred = (
+            f"Auto-mix: waiting for downbeat at {_fmt_time(scheduled)}...{tail}"
+            if scheduled is not None else ""
+        )
+        self._commit_mix(
+            self._next_prepared, fade, scheduled, swap,
+            restore_from=restore_from,
+            restore_to=restore_to,
+            restore_seconds=max(0.5, panel.restore),
+            status_immediate=f"Auto-mix: beat-matched into {name}{tail}",
+            status_deferred=deferred,
+        )
+
+    def _emergency_commit_asis(self, source: str, cue_sec: float, case: int) -> None:
+        """Cases 1 / 2 / 4: decode the raw incoming track in a worker, then crossfade it
+        as-is (natural tempo, no rubberband, no restore ramp). The fade is recomputed on
+        the UI thread post-decode so it lands on the outgoing track's real end."""
+        rec = self.library.get(source, empty_record())
+        bpm, key = rec["bpm"], rec["key"]
+        downbeats = list(rec["downbeats"])
+        name = Path(source).name
+        self._status(f"Auto-mix: bringing in {name}...")
+
+        def _work():
+            try:
+                audio = self.engine.load_audio(source)
+                cue_sample = int(cue_sec * SAMPLE_RATE)
+                buf = audio[cue_sample:]
+                # The buffer starts at cue_sample, so rebase the absolute library
+                # downbeats onto the buffer (drop any before the cue) — else a later
+                # bar-aligned mix off this track would land off the bar. Mirrors the
+                # backspin offset (which also prepends the SFX); here there's no prefix.
+                rel_downbeats = [d - cue_sample for d in downbeats if d >= cue_sample]
+                self.call_from_thread(
+                    self._start_emergency_asis, buf, source, bpm, key, rel_downbeats, case
+                )
+            except Exception as exc:
+                self.call_from_thread(self._status, f"Auto-mix error: {exc}")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _start_emergency_asis(self, buf, source, bpm, key, downbeats, case) -> None:
+        """UI-thread finisher for an as-is emergency mix: recompute the fade from the
+        runway left NOW and commit. Bails if the track ended or was superseded (engine no
+        longer PLAYING) while the decode was in flight."""
+        if self.engine.state != State.PLAYING:
+            return
+        remaining = (self.engine.duration - self.engine.position) / SAMPLE_RATE
+        fade = max(0.5, min(EMERGENCY_SECONDS, remaining))
+        swap = (source, bpm, key, downbeats)
+        prefix = {
+            1: "Auto-mix: bringing in",
+            2: "Auto-mix: dropped prep, bringing in",
+            4: "Auto-mix: no queue - auto-selected",
+        }.get(case, "Auto-mix: bringing in")
+        name = Path(source).name
+        self._commit_mix(
+            buf, fade, None, swap,
+            restore_from=0.0, restore_to=0.0, restore_seconds=0.0,
+            status_immediate=f"{prefix} {name} (as-is)",
+            status_deferred="",
+        )
 
     # ------------------------------------------------------------------
     # Backspin transition (B)
@@ -1349,6 +1629,7 @@ class AutoMixApp(App):
         self._t_restore_start = 0.0
         self._mix_scheduled = False
         self._pending_now_swap = None
+        self._emergency_fired = False   # fresh now-playing track — re-arm the one-shot
 
         # The NEXT slot is consumed — stop any cue preview of it (Q7 lifecycle).
         self._stop_cue()
@@ -1446,6 +1727,7 @@ class AutoMixApp(App):
         self._restore_to_bpm = 0.0
         self._mix_scheduled = False
         self._pending_now_swap = None
+        self._emergency_fired = False
         # Invalidate prep — its buffer (if any) was matched to the finished track.
         self._prep_epoch += 1
         self._preparing = False
@@ -1657,6 +1939,11 @@ class AutoMixApp(App):
                 self._t_restore_start = time.time()
         self._prev_engine_state = current_state
 
+        # Auto/emergency mix: when armed, fire a crossfade into the next track as the
+        # playing one enters its final window. The decision re-reads the live engine
+        # state itself, so it's safe to call unconditionally here.
+        self._maybe_emergency_mix()
+
         # Prep-BPM animation in NextTrackPanel (driven by rubberband's own progress)
         if self._prep_animating and self._next_path:
             t = _smootherstep(self._prep_progress)
@@ -1778,6 +2065,7 @@ class AutoMixApp(App):
         self._restore_from_bpm = 0.0
         self._restore_to_bpm = 0.0
         self._mix_scheduled = False
+        self._emergency_fired = False   # fresh now-playing track — re-arm the one-shot
         # Orphan any in-flight prep: it was rendered with start_rate computed
         # against the OLD now-playing BPM, so its buffer is wrong for the
         # newly-loaded track. The bump makes the prep worker silently discard
