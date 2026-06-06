@@ -1,9 +1,7 @@
 <div align="center">
   <img src="assets/sample.png" alt="AutoMix cat" width="160">
-  <h1>AutoMix</h1>
+  <h3>AutoMix</h3>
 </div>
-
----
 
 <p align="center"><i>your terminal is now a DJ</i></p>
 
@@ -11,6 +9,8 @@
   <img alt="last commit" src="https://img.shields.io/github/last-commit/LaRambla20/songs-automixer_python?style=flat-square&color=2ecc40">
   <img alt="license" src="https://img.shields.io/badge/license-PolyForm%20NC-2ecc40?style=flat-square">
 </p>
+
+---
 
 A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music folder, browse tracks, and seamlessly crossfade between songs with automatic tempo synchronisation. Includes DJ-style features: live master FX (high-pass / low-pass filter and a tempo-synced gate), a backspin/rewind transition, separate master/headphone output routing with pre-listen cueing (PFL), in-app volume control, and a hands-off **auto-mix** that crossfades into the next track as the current one nears its end.
 
