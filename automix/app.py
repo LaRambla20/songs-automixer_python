@@ -504,6 +504,9 @@ class AutoMixApp(App):
         color: #00ff41;
         scrollbar-color: #005500;
     }
+    #folder-tree {
+        height: 1fr;
+    }
     Tree > .tree--cursor {
         background: #003300;
         color: #00ff41;
@@ -520,6 +523,9 @@ class AutoMixApp(App):
         background: #0d0d0d;
         color: #00ff41;
         scrollbar-color: #005500;
+    }
+    #song-list {
+        height: 1fr;
     }
     DataTable > .datatable--cursor {
         background: #003300;
