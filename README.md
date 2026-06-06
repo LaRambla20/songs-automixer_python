@@ -245,3 +245,16 @@ For just the **AUTOMIX wordmark with no portrait**, pass `--no-image`:
 ## Supported Formats
 
 MP3, FLAC, WAV, OGG, M4A, AAC, Opus, WMA, AIFF, and anything else ffmpeg can decode.
+
+## License
+
+Copyright (c) 2026 Emanuele Rambaldi.
+
+The source code is released under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
+You are free to use, modify, and share it **for non-commercial purposes**, as long
+as you keep the copyright notice. **Commercial use or selling requires a separate
+license** — contact the author.
+
+The bundled audio in `samples/` (DJ rewind / backspin sound effects) and any music in
+`music/` are **not** covered by this license and remain the property of their respective
+owners; they are included for demonstration only. See the [LICENSE](LICENSE) file for details.
