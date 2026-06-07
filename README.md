@@ -260,6 +260,13 @@ For just the **AUTOMIX wordmark with no portrait**, pass `--no-image`:
 
 MP3, FLAC, WAV, OGG, M4A, AAC, Opus, WMA, AIFF, and anything else ffmpeg can decode.
 
+## Credits
+
+- **DJ backspin sample** — by [Neily Hype](https://neilyhype.com/).
+- **8x8 pixel-art cat** — by **SpinachChicken** on [OpenGameArt.org](https://opengameart.org/).
+
+Both were published as free to use; thanks to their creators.
+
 ## License
 
 Copyright (c) 2026 Emanuele Rambaldi.
