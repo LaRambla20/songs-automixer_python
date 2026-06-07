@@ -10,7 +10,7 @@
   <img alt="license" src="https://img.shields.io/badge/license-PolyForm%20NC-2ecc40?style=flat-square">
 </p>
 
----
+<h2></h2>
 
 A terminal-based music auto-mixer for Linux, macOS, and Windows. Load a music folder, browse tracks, and seamlessly crossfade between songs with automatic tempo synchronisation. Includes DJ-style features: live master FX (high-pass / low-pass filter and a tempo-synced gate), a backspin/rewind transition, separate master/headphone output routing with pre-listen cueing (PFL), in-app volume control, and a hands-off **auto-mix** that crossfades into the next track as the current one nears its end.
 
