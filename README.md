@@ -1,6 +1,6 @@
 <div align="center">
   <img src="assets/sample.png" alt="AutoMix cat" width="160">
-  <h3>AutoMix</h3>
+  <h2>AutoMix</h2>
 </div>
 
 <p align="center"><i>your terminal is now a DJ</i></p>
