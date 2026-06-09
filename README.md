@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="last commit" src="https://img.shields.io/github/last-commit/LaRambla20/songs-automixer_python?style=flat-square&color=2ecc40">
-  <img alt="license" src="https://img.shields.io/badge/license-PolyForm%20NC-2ecc40?style=flat-square">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-2ecc40?style=flat-square">
 </p>
 
 <h2></h2>
