@@ -271,10 +271,8 @@ Both were published as free to use; thanks to their creators.
 
 Copyright (c) 2026 Emanuele Rambaldi.
 
-The source code is released under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
-You are free to use, modify, and share it **for non-commercial purposes**, as long
-as you keep the copyright notice. **Commercial use or selling requires a separate
-license** — contact the author.
+The source code is released under the **[MIT License](LICENSE)** — free to use, modify,
+and distribute (including commercially), as long as you keep the copyright notice.
 
 The bundled audio in `samples/` (DJ rewind / backspin sound effects) and any music in
 `music/` are **not** covered by this license and remain the property of their respective
