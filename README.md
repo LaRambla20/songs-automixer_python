@@ -3,7 +3,7 @@
   <h3>AutoMix</h3>
 </div>
 
-<p align="center"><i>your terminal is now a DJ</i></p>
+<p align="center"><i>Being a DJ has never been this easy</i></p>
 
 <p align="center">
   <img alt="last commit" src="https://img.shields.io/github/last-commit/LaRambla20/songs-automixer_python?style=flat-square&color=2ecc40">
