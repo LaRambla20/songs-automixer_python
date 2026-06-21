@@ -16,6 +16,9 @@ __pycache__/
 ~/.automix_cache.json
 *.tmp
 
+# Diagnostic output (local paths / personal filenames)
+tests/progress_log.txt
+
 # OS
 .DS_Store
 Thumbs.db
