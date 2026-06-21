@@ -262,10 +262,10 @@ MP3, FLAC, WAV, OGG, M4A, AAC, Opus, WMA, AIFF, and anything else ffmpeg can dec
 
 ## Credits
 
-- **DJ backspin sample** — by [Neily Hype](https://neilyhype.com/).
-- **8x8 pixel-art cat** — by **SpinachChicken** on [OpenGameArt.org](https://opengameart.org/).
+- **DJ backspin sample** — by [Neily Hype](https://neilyhype.com/), published as a free download.
+- **8x8 pixel-art cat** — by **SpinachChicken** on [OpenGameArt.org](https://opengameart.org/), released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) (public domain).
 
-Both were published as free to use; thanks to their creators.
+Thanks to their creators.
 
 ## License
 
