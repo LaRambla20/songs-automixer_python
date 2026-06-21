@@ -87,6 +87,17 @@ If `pip install` fails with `CERTIFICATE_VERIFY_FAILED` / `unable to get local i
 python main.py /path/to/music/folder
 ```
 
+> **Organise your tracks into subfolders.** The browser is a three-level drill-down (**root -> subfolders -> songs**), so songs must live in subfolders of the music folder - files placed directly in the root are not browsable. Group them however you like (by genre, set, BPM, ...):
+>
+> ```
+> music/
+> |- house/
+> |  |- track-a.mp3
+> |  |- track-b.mp3
+> |- techno/
+> |  |- track-c.mp3
+> ```
+
 To use a different backspin SFX for the `B` transition (default `samples/top_DJ_Rewind_SFX_10.mp3`):
 
 ```bash
