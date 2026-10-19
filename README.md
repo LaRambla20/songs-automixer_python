@@ -141,7 +141,7 @@ python main.py /path/to/music --main-device "Realtek" --headphones-device "B01"
 
 The master and headphones must resolve to **different** devices — the app refuses to start otherwise (including when `--main-device` is omitted and the OS default happens to be the headphones).
 
-On first launch the app analyses every audio file (BPM + key detection). Results are cached in `~/.automix_cache.json`, so subsequent launches are instant.
+On first launch the app analyses every audio file (BPM + key detection). Results are cached in `~/.automix_cache.json`, so subsequent launches are instant. Songs are recognised by file name, size and modification date — not their folder — so moving your library, copying it to another disk, or an external drive changing letter (`F:` → `G:`) doesn't trigger re-analysis. Renaming or editing a file does.
 
 While a track is playing, the song list shows a **`:)`** next to every track whose tempo is mixable with it — including half-time and double-time matches (e.g. a 64 BPM track is flagged against a 128 BPM track). It's a quick way to spot good next-track candidates.
 

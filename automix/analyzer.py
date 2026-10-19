@@ -28,6 +28,17 @@ def empty_record() -> Dict:
 
 
 def _file_key(path: str) -> str:
+    """Location-independent: lowercased filename + whole-second mtime + size, NOT
+    the folder path, so a drive-letter change / moved library / mtime-preserving
+    copy still hits the cache. Renaming or editing a file re-analyzes it."""
+    stat = os.stat(path)
+    name = os.path.basename(path).lower()
+    return hashlib.md5(f"{name}:{int(stat.st_mtime)}:{stat.st_size}".encode()).hexdigest()
+
+
+def _legacy_file_key(path: str) -> str:
+    """Old path-based key, only used to migrate entries on lookup. Safe to delete
+    once existing caches have been migrated."""
     stat = os.stat(path)
     return hashlib.md5(f"{path}:{stat.st_mtime}:{stat.st_size}".encode()).hexdigest()
 
@@ -157,9 +168,13 @@ def _load_cache() -> Dict[str, Dict]:
 
 
 def _save_cache(entries: Dict[str, Dict]) -> None:
+    # Write a temp file then swap it in, so a crash/full disk mid-write can't
+    # truncate the existing cache (which would force a full re-analysis).
+    tmp = CACHE_PATH.with_name(CACHE_PATH.name + ".tmp")
     try:
-        with open(CACHE_PATH, "w") as f:
+        with open(tmp, "w") as f:
             json.dump({"version": CACHE_VERSION, "entries": entries}, f)
+        os.replace(tmp, CACHE_PATH)
     except Exception:
         pass
 
@@ -192,6 +207,11 @@ def analyze_library(
     for path in files:
         k = _file_key(path)
         entry = cache.get(k)
+        if entry is None:
+            # Migrate an entry stored under the old path-based key.
+            entry = cache.pop(_legacy_file_key(path), None)
+            if entry is not None:
+                cache[k] = entry
         if entry is not None and _entry_is_valid(entry):
             results[path] = entry
         else:
@@ -204,10 +224,12 @@ def analyze_library(
     for path, cache_key in to_analyze:
         try:
             record = analyze_file(path)
+            cache[cache_key] = record
         except Exception:
+            # Not cached: a transient failure (e.g. external disk unplugged
+            # mid-scan) must be retried next launch, not stuck at BPM 0.
             record = empty_record()
         results[path] = record
-        cache[cache_key] = record
         done += 1
         if progress_callback:
             progress_callback(done, total)
