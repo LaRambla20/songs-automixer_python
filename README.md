@@ -83,6 +83,8 @@ If `pip install` fails with `CERTIFICATE_VERIFY_FAILED` / `unable to get local i
 
 ## Usage
 
+In each new terminal, activate the virtual environment first (`source .venv/bin/activate` on Linux/macOS, `.venv\Scripts\activate` on Windows), then:
+
 ```bash
 python main.py /path/to/music/folder
 ```
