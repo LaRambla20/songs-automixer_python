@@ -83,7 +83,24 @@ If `pip install` fails with `CERTIFICATE_VERIFY_FAILED` / `unable to get local i
 
 ## Usage
 
-In each new terminal, activate the virtual environment first (`source .venv/bin/activate` on Linux/macOS, `.venv\Scripts\activate` on Windows), then:
+### 1. Activate the virtual environment
+
+The venv created during [Installation](#installation) is only active in the terminal where you activated it, so **repeat this step every time you open a new terminal**. Open a terminal in the project folder, then:
+
+```bash
+# Linux / macOS
+source .venv/bin/activate
+```
+```powershell
+# Windows (PowerShell)
+.venv\Scripts\activate
+```
+
+You'll know it worked when your prompt starts with `(.venv)`. To leave the venv later, run `deactivate`.
+
+> **Windows: "running scripts is disabled"?** PowerShell blocks the activation script by default. Allow it once with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or skip activation and call the venv's Python directly: `.venv\Scripts\python.exe main.py ...`
+
+### 2. Launch AutoMix
 
 ```bash
 python main.py /path/to/music/folder
