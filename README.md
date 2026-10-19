@@ -101,7 +101,7 @@ python main.py /path/to/music/folder
 To use a different backspin SFX for the `B` transition (default `samples/top_DJ_Rewind_SFX_10.mp3`):
 
 ```bash
-python main.py /path/to/music/folder --backspin backspin_09.wav   # bare name → resolved in samples/
+python main.py /path/to/music/folder --backspin my_rewind.wav   # bare name → resolved in samples/ (drop your own file there)
 python main.py /path/to/music/folder --backspin /path/to/my_rewind.wav   # or an explicit path
 ```
 
@@ -185,7 +185,7 @@ It needs a track playing and a next track queued (`N`) that is **raw** — not p
 
 The next track starts from its **raw** cue — `0:00` by default, or exactly the value you typed with `C` (unlike the crossfade, which snaps the cue to the nearest bar). The panel shows both: `Cue:` is where a backspin starts, `Mix:` is where a crossfade starts.
 
-The SFX defaults to `samples/top_DJ_Rewind_SFX_10.mp3`; override it with `--backspin` (see [Usage](#usage)). The `samples/` folder ships several rewind / backspin / scratch one-shots in `.wav` / `.mp3` to choose from.
+The SFX defaults to `samples/top_DJ_Rewind_SFX_10.mp3`; override it with `--backspin` (see [Usage](#usage)). Only that default one-shot is bundled; any other `.wav` / `.mp3` you drop into `samples/` can be picked with `--backspin` (they're git-ignored).
 
 ## Auto-mix (hands-off)
 
@@ -285,6 +285,6 @@ Copyright (c) 2026 Emanuele Rambaldi.
 The source code is released under the **[MIT License](LICENSE)** — free to use, modify,
 and distribute (including commercially), as long as you keep the copyright notice.
 
-The bundled audio in `samples/` (DJ rewind / backspin sound effects) and any music in
+The bundled audio in `samples/` (the default DJ rewind sound effect) and any music in
 `music/` are **not** covered by this license and remain the property of their respective
 owners; they are included for demonstration only. See the [LICENSE](LICENSE) file for details.
